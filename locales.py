@@ -7,7 +7,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV & MissAV',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.1',
+        'version_label': 'v2.3.2',
         'by_author': 'by ALOS',
 
         # Tabs
@@ -35,6 +35,11 @@ STRINGS = {
         'loading_browse': '載入中...',
         'no_results': '沒有找到影片',
         'fetch_error': '載入失敗，請稍後再試',
+        'category_load_failed': '分類載入失敗，請重試；可能被 Cloudflare 阻擋',
+        'mirrors_blocked': '所有鏡像都被 Cloudflare 阻擋，請改用 VPN 或不同網路',
+        'blocked_vpn_hint': '所有鏡像都被 Cloudflare 阻擋，請改用 VPN 或不同網路',
+        'parse_failed_short': '封鎖或解析失敗，請重試',
+        'open_folder_failed_title': '無法開啟資料夾',
 
         # Download tab
         'save_location': '存放位置',
@@ -110,7 +115,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV & MissAV',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.1',
+        'version_label': 'v2.3.2',
         'by_author': 'by ALOS',
 
         # Tabs
@@ -138,6 +143,11 @@ STRINGS = {
         'url_not_supported': 'Unsupported URL',
         'crawling_url': 'Crawling listing...',
         'crawl_added': 'Added {n} videos to download queue',
+        'category_load_failed': 'Failed to load categories. Try again; Cloudflare may be blocking the request.',
+        'mirrors_blocked': 'All mirrors were blocked by Cloudflare. Use a VPN or a different network.',
+        'blocked_vpn_hint': 'All mirrors were blocked by Cloudflare. Use a VPN or a different network.',
+        'parse_failed_short': 'Blocked or parse failed; please retry.',
+        'open_folder_failed_title': 'Cannot Open Folder',
 
         # Download tab
         'save_location': 'Save to',

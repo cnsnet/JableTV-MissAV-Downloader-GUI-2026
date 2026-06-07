@@ -43,8 +43,8 @@ class SiteMissAV(M3U8Crawler):
     #   https://missav.ai/sone-543
     # Does NOT match:
     #   https://missav.ai/dm278/chinese-subtitle  (category listing)
-    website_pattern = r'https://(?:www\.)?missav\.(?:ai|ws)/(?:dm\d+/)?(?:cn|en|ja|ko|ms|th)/([a-zA-Z0-9][a-zA-Z0-9\-]+)|https://(?:www\.)?missav\.(?:ai|ws)/([a-zA-Z][a-zA-Z0-9]*(?:-[a-zA-Z0-9]+)*-\d+[a-zA-Z0-9\-]*)'
-    website_dirname_pattern = r'https://(?:www\.)?missav\.(?:ai|ws)/(?:dm\d+/)?(?:(?:cn|en|ja|ko|ms|th)/)?([a-zA-Z][a-zA-Z0-9]*(?:-[a-zA-Z0-9]+)*-\d+[a-zA-Z0-9\-]*)'
+    website_pattern = r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/(?:dm\d+/)?(?:cn|en|ja|ko|ms|th)/([a-zA-Z0-9][a-zA-Z0-9\-]+)|https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/([a-zA-Z][a-zA-Z0-9]*(?:-[a-zA-Z0-9]+)*-\d+[a-zA-Z0-9\-]*)'
+    website_dirname_pattern = r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/(?:dm\d+/)?(?:(?:cn|en|ja|ko|ms|th)/)?([a-zA-Z][a-zA-Z0-9]*(?:-[a-zA-Z0-9]+)*-\d+[a-zA-Z0-9\-]*)'
 
     _shared_scraper = None
     _scraper_lock = __import__('threading').Lock()
@@ -61,26 +61,17 @@ class SiteMissAV(M3U8Crawler):
             return cls._shared_scraper
 
     def get_url_infos(self):
-        import time
-        self._extra_headers = {
-            'Referer': 'https://missav.ai/',
-            'Origin': 'https://missav.ai',
-        }
         scraper = self._get_scraper()
-        last_exc = None
-        for attempt in range(3):
-            try:
-                htmlfile = scraper.get(self._url, timeout=60)
-                break
-            except Exception as e:
-                last_exc = e
-                print(f'[MissAV] 嘗試 {attempt+1}/3 失敗: {e}', flush=True)
-                if attempt < 2:
-                    time.sleep(3 * (attempt + 1))
-        else:
-            raise last_exc
-        if htmlfile.status_code != 200:
-            raise Exception(f"HTTP {htmlfile.status_code} for {self._url}")
+        hf = lambda host: {'Referer': f'https://{host}/', 'Origin': f'https://{host}'}
+        def _validate(resp):
+            return ('og:title' in resp.text) and (('m3u8' in resp.text) or ('eval(function(p,a,c,k,e,d)' in resp.text))
+        resp, host, reason = fetch_with_mirrors(scraper, self._url, 'missav', _validate, headers_factory=hf)
+        if reason != 'ok':
+            if reason == 'blocked':
+                raise MirrorsBlockedError("所有鏡像都被 Cloudflare 阻擋（可能是你的網路/IP 信譽問題，請改用 VPN 或不同網路）")
+            raise Exception(f"頁面解析失敗（版面改版或影片不存在）: {self._url}")
+        self._extra_headers = {'Referer': f'https://{host}/', 'Origin': f'https://{host}'}
+        htmlfile = resp
 
         # Title from og:title
         og_title = re.search(r'og:title"\s+content="([^"]+)"', htmlfile.text)
@@ -166,49 +157,38 @@ class MissAVBrowser:
 
     @classmethod
     def fetch_page(cls, url):
-        """Return list of dicts with url, title, thumbnail, duration."""
+        def _validate(resp):
+            s = BeautifulSoup(resp.content, 'html.parser')
+            return bool(s.select('div.thumbnail') or s.select('div.group, article.video-item, div[class*="grid"] > div'))
+        resp, host, reason = fetch_with_mirrors(cls._get_scraper(), url, 'missav', _validate)
+        if reason != 'ok':
+            if reason == 'blocked':
+                raise MirrorsBlockedError(url)
+            return []
         try:
-            r = cls._get_scraper().get(url, timeout=30)
-            if r.status_code != 200:
-                import sys
-                print(f'[MissAV] fetch_page {url}: HTTP {r.status_code}', file=sys.stderr, flush=True)
-                return []
-            soup = BeautifulSoup(r.content, 'html.parser')
-            cards = soup.select('div.thumbnail')
-            # Fallback: some actress/genre pages use a different grid layout
-            if not cards:
-                cards = soup.select('div.group, article.video-item, div[class*="grid"] > div')
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            cards = soup.select('div.thumbnail') or soup.select('div.group, article.video-item, div[class*="grid"] > div')
             videos = []
+            from urllib.parse import urljoin
             for card in cards:
-                link = card.select_one('a[href*="missav"]')
+                link = card.select_one('a[href]')
                 if not link:
                     continue
-                video_url = link.get('href', '')
+                video_url = urljoin(str(resp.url), link.get('href', ''))
                 if '/search/' in video_url:
                     continue
                 last_seg = video_url.rstrip('/').rsplit('/', 1)[-1].split('?')[0]
                 if not re.search(r'\d', last_seg):
                     continue
-
                 img = card.select_one('img')
-                thumbnail = img.get('data-src', '') or (img.get('src', '') if img else '')
+                thumbnail = (img.get('data-src', '') or img.get('src', '')) if img else ''
                 title_text = img.get('alt', '') if img else ''
-
-                # Try the text link inside div.my-2
                 title_a = card.select_one('div.my-2 a, div.truncate a')
                 if title_a:
                     title_text = title_a.get_text(strip=True) or title_text
-
                 duration_span = card.select_one('span.absolute.bottom-1.right-1')
                 duration = duration_span.get_text(strip=True) if duration_span else ''
-
-                if video_url:
-                    videos.append({
-                        'url': video_url,
-                        'title': title_text,
-                        'thumbnail': thumbnail,
-                        'duration': duration,
-                    })
+                videos.append({'url': video_url, 'title': title_text, 'thumbnail': thumbnail, 'duration': duration})
             return videos
         except Exception:
             return []

@@ -8,6 +8,7 @@ import threading
 import requests
 import urllib.request
 import m3u8
+import config
 from Crypto.Cipher import AES
 from config import headers
 import concurrent.futures
@@ -18,12 +19,84 @@ import shutil
 import tempfile
 import ctypes
 import sys
+from urllib.parse import urlsplit, urlunsplit
+
+
+class MirrorsBlockedError(Exception):
+    pass
+
 
 request_headers = {'browser': 'firefox', 'platform': platform.system().lower()}
 default_max_workers = min(os.cpu_count() * 2, 16) if os.cpu_count() else 8
 
 _session_lock = threading.Lock()
 _session = None
+
+_active_host = {}                 # sticky per-process working host per site_key
+_active_host_lock = threading.Lock()
+
+def _swap_host(url, host):
+    p = urlsplit(url)
+    return urlunsplit((p.scheme or 'https', host, p.path, p.query, p.fragment))
+
+def _is_cf_interstitial(resp):
+    # Fast reject for Cloudflare block pages. NOTE: 'challenge-platform' also appears on
+    # SUCCESSFUL missav pages -- never use it as a marker. Content success is decided by validate().
+    if resp.status_code in (403, 429, 503):
+        return True
+    if 'challenge' in resp.headers.get('cf-mitigated', '').lower():
+        return True
+    head = resp.content[:3000].lower()
+    return (b'just a moment' in head) or (b'cf-browser-verification' in head) or (b'cf_chl_' in head)
+
+def fetch_with_mirrors(scraper, url, site_key, validate, timeout=15, headers_factory=None):
+    """GET url, rotating host across config.MIRRORS[site_key].
+    Order: original host (if allowlisted) -> sticky active host -> remaining mirrors (dedup, order-preserving).
+    Per host: 1 retry on transport error; skip CF interstitials; reject redirects that land off the allowlist.
+    validate(resp)->bool gates content success. headers_factory(host)->dict gives per-host headers (e.g. Referer).
+    Returns (resp, host, reason): 'ok' (validated) | 'empty' (a real non-interstitial page was seen but none validated)
+    | 'blocked' (every attempt was interstitial / transport failure)."""
+    mirrors = config.MIRRORS.get(site_key) or [urlsplit(url).netloc]
+    orig = urlsplit(url).netloc
+    with _active_host_lock:
+        active = _active_host.get(site_key)
+    order = []
+    for h in [orig, active] + list(mirrors):
+        if h and h in mirrors and h not in order:
+            order.append(h)
+    if not order:
+        order = list(mirrors)
+    saw_real = False
+    for host in order:
+        target = _swap_host(url, host)
+        hdrs = headers_factory(host) if headers_factory else None
+        resp = None
+        for attempt in range(2):                      # 1 retry on transport error only
+            try:
+                resp = scraper.get(target, timeout=timeout, headers=hdrs or {})
+                break
+            except Exception:
+                resp = None
+        if resp is None:
+            continue
+        if _is_cf_interstitial(resp):
+            continue
+        try:
+            final_host = urlsplit(str(resp.url)).netloc
+        except Exception:
+            final_host = host
+        if final_host and final_host not in mirrors:  # redirected off the allowlist -> distrust
+            continue
+        saw_real = True
+        try:
+            ok = validate(resp)
+        except Exception:
+            ok = False
+        if ok:
+            with _active_host_lock:
+                _active_host[site_key] = host
+            return resp, host, 'ok'
+    return None, None, ('empty' if saw_real else 'blocked')
 
 # ── Global speed limiter (token bucket) ──────────────────────────
 class _SpeedLimiter:
@@ -198,6 +271,7 @@ class M3U8Crawler:
         self._speed_lock = threading.Lock()
         self._bytes_downloaded = 0
         self._speed_start = 0.0
+        self._last_error = None
         try:
             self._dirName = self.validate_url(url)
             if not self._dirName: return
@@ -218,6 +292,7 @@ class M3U8Crawler:
                     if self._imageUrl: print("縮圖: " + self._imageUrl, flush=True)
 
         except Exception as exc:
+            self._last_error = exc
             self._targetName = self._imageUrl = self._m3u8url = None
             print(f"下載網址 {url} 錯誤!! ({exc})", flush=True)
 

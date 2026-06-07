@@ -9,6 +9,7 @@ import io
 import csv
 import time
 import threading
+import concurrent.futures
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional
@@ -20,6 +21,7 @@ from PIL import Image
 import M3U8Sites
 from M3U8Sites.SiteJableTV import JableTVBrowser
 from M3U8Sites.SiteMissAV import MissAVBrowser
+from M3U8Sites.M3U8Crawler import MirrorsBlockedError
 from config import headers
 from locales import T, set_lang, get_lang
 
@@ -66,7 +68,7 @@ SITES = {
 
 # ── Download Manager ────────────────────────────────────────────────
 class DownloadItem:
-    __slots__ = ('url', 'name', 'state', 'progress', 'speed')
+    __slots__ = ('url', 'name', 'state', 'progress', 'speed', 'error')
 
     def __init__(self, url: str, name: str = '', state: str = ''):
         self.url = url
@@ -74,6 +76,7 @@ class DownloadItem:
         self.state = state
         self.progress = 0
         self.speed = ''
+        self.error = ''
 
 
 class DownloadManager:
@@ -162,12 +165,29 @@ class DownloadManager:
             self._prep_sem.acquire()
             try:
                 job = M3U8Sites.CreateSite(url, dest)
+            except MirrorsBlockedError as exc:
+                with self._lock:
+                    self._active.pop(url, None)
+                self._set_state(url, '封鎖/解析失敗', error=T('blocked_vpn_hint'))
+                self._try_next()
+                return
             finally:
                 self._prep_sem.release()
-            if not job or not job.is_url_vaildate():
+            if not job:
                 with self._lock:
                     self._active.pop(url, None)
                 self._set_state(url, '網址錯誤')
+                self._try_next()
+                return
+            if not job.is_url_vaildate():
+                err = getattr(job, '_last_error', None)
+                if isinstance(err, MirrorsBlockedError):
+                    error = T('blocked_vpn_hint')
+                else:
+                    error = str(err) if err else T('parse_failed_short')
+                with self._lock:
+                    self._active.pop(url, None)
+                self._set_state(url, '封鎖/解析失敗', error=error)
                 self._try_next()
                 return
             with self._lock:
@@ -186,7 +206,7 @@ class DownloadManager:
             print(f'[下載失敗] {url}\n  {exc}', flush=True)
             with self._lock:
                 self._active.pop(url, None)
-            self._set_state(url, '未完成')
+            self._set_state(url, '未完成', error=str(exc))
         self._try_next()
 
     def _try_next(self):
@@ -197,7 +217,7 @@ class DownloadManager:
             self._active[url] = None
         threading.Thread(target=self._run, args=(url, dest), daemon=True).start()
 
-    def _set_state(self, url: str, state: str, name: str = '', progress: int = -1):
+    def _set_state(self, url: str, state: str, name: str = '', progress: int = -1, error=None):
         with self._lock:
             item = self._items.get(url)
             if item:
@@ -206,6 +226,10 @@ class DownloadManager:
                     item.name = name
                 if progress >= 0:
                     item.progress = progress
+                if error is not None:
+                    item.error = error
+                elif state not in ('未完成', '封鎖/解析失敗'):
+                    item.error = ''
                 if state != '下載中':
                     item.speed = ''
 
@@ -224,12 +248,16 @@ class DownloadManager:
     def save_csv(self, path: str):
         with self._lock:
             items = list(self._items.values())
-        with open(path, 'w', encoding='utf-8', newline='') as f:
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8', newline='') as f:
             w = csv.writer(f)
             w.writerow(['狀態', '名稱', '進度', '速度', '網址'])
             for item in items:
                 w.writerow([item.state, item.name, f'{item.progress}%',
                             item.speed, item.url])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
 
     def load_csv(self, path: str):
         if not os.path.exists(path):
@@ -257,6 +285,8 @@ def fetch_page_data(browser_cls, url: str) -> dict:
     try:
         videos = browser_cls.fetch_page(url)
         return {'videos': videos}
+    except MirrorsBlockedError:
+        raise
     except Exception as e:
         print(f'[瀏覽錯誤] {e}')
         return {'videos': []}
@@ -335,9 +365,14 @@ class ModernApp(ctk.CTk):
         self._selected_urls: set = set()
         self._sidebar_expanded: dict[str, bool] = {}
         self._grid_gen: int = 0  # bumps on each page refresh so stale thumbs are dropped
+        self._page_req: int = 0
+        self._last_loaded_page: int = 1
+        self._browse_blocked = False
+        self._browse_empty_message = ''
         self._card_widgets: dict = {}  # url -> {card, sel_btn}
         self._dl_rows: dict = {}   # url -> {row, state_lbl, name_lbl, pb, pct, spd, remove}
         self._dl_empty_lbl = None
+        self._thumb_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
         # Download manager
         self._dlmgr = DownloadManager(max_concurrent=DEFAULT_CONCURRENT)
@@ -353,7 +388,15 @@ class ModernApp(ctk.CTk):
         self._clipboard_poll()
 
         # Load initial categories in background
-        threading.Thread(target=self._load_categories, daemon=True).start()
+        self._load_categories()
+
+    def _ui(self, fn):
+        if self._is_closing:
+            return
+        try:
+            self.after(0, fn)
+        except tk.TclError:
+            pass
 
     # ── Build UI ─────────────────────────────────────────────────────
     def _build_ui(self):
@@ -373,7 +416,7 @@ class ModernApp(ctk.CTk):
                      text_color=ACCENT).pack(side='left', padx=(8, 0))
 
         # Right info
-        ctk.CTkLabel(header, text='v2.3.1  |  by ALOS',
+        ctk.CTkLabel(header, text='v2.3.2  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right', padx=20)
 
@@ -784,7 +827,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.3.1',
+        ctk.CTkLabel(ver_badge, text='v2.3.2',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -794,20 +837,58 @@ class ModernApp(ctk.CTk):
 
     # ── Browse logic ─────────────────────────────────────────────────
     def _load_categories(self):
-        browser = SITES[self._site_key]['browser']
-        try:
-            if self._site_key == 'MissAV':
-                cats = browser.fetch_categories(lang=T('missav_lang'))
-            else:
-                cats = browser.fetch_categories()
-        except Exception:
-            cats = []
-        self._categories = cats
-        if cats:
-            self._current_base_url = cats[0]['url']
-            names = [c['name'] for c in cats]
-            self.after(0, lambda: self._update_cat_menu(names))
-            self.after(0, self._load_page)
+        if self._is_closing:
+            return
+        self._page_req += 1
+        my_req = self._page_req
+        site_key = self._site_key
+        browser = SITES[site_key]['browser']
+
+        def _fetch():
+            failed = False
+            try:
+                if site_key == 'MissAV':
+                    cats = browser.fetch_categories(lang=T('missav_lang'))
+                else:
+                    cats = browser.fetch_categories()
+            except Exception:
+                failed = True
+                cats = []
+            if not cats and hasattr(browser, 'HOMEPAGE_SECTIONS'):
+                cats = [{'name': name, 'url': url, 'count': 0, 'section': True}
+                        for name, url in browser.HOMEPAGE_SECTIONS]
+
+            def _apply():
+                if self._is_closing or my_req != self._page_req:
+                    return
+                self._categories = cats
+                if cats and not failed:
+                    self._current_base_url = cats[0]['url']
+                    self._page = 1
+                    self._last_loaded_page = 1
+                    self._has_next = True
+                    self._browse_blocked = False
+                    self._browse_empty_message = ''
+                    self._update_cat_menu([c['name'] for c in cats])
+                    self._load_page()
+                    return
+                if cats:
+                    self._current_base_url = cats[0]['url']
+                    self._update_cat_menu([c['name'] for c in cats])
+                else:
+                    self._current_base_url = ''
+                    self._cat_menu.configure(values=[])
+                    self._cat_var.set('')
+                self._videos = []
+                self._has_next = False
+                self._browse_blocked = False
+                self._browse_empty_message = T('category_load_failed')
+                self._status_lbl.configure(text=T('category_load_failed'))
+                self._refresh_grid()
+
+            self._ui(_apply)
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def _update_cat_menu(self, names: list[str]):
         self._cat_menu.configure(values=names)
@@ -815,38 +896,68 @@ class ModernApp(ctk.CTk):
             self._cat_var.set(names[0])
 
     def _load_page(self):
-        browser = SITES[self._site_key]['browser']
+        if not self._current_base_url:
+            return
+        self._page_req += 1
+        my_req = self._page_req
+        site_key = self._site_key
+        browser = SITES[site_key]['browser']
         base = self._current_base_url
-        if self._site_key == 'JableTV':
+        page_snapshot = self._page
+        if site_key == 'JableTV':
             if '?' in base:
-                url = f'{base}&from={self._page}'
+                url = f'{base}&from={page_snapshot}'
             else:
-                url = f'{base.rstrip("/")}/?from={self._page}'
+                url = f'{base.rstrip("/")}/?from={page_snapshot}'
         else:
-            url = MissAVBrowser.page_url(base, self._page)
+            url = MissAVBrowser.page_url(base, page_snapshot)
 
         def _fetch():
-            data = fetch_page_data(browser, url)
-            self._videos = data.get('videos', [])
-            self.after(0, self._refresh_grid)
-            self.after(0, lambda: self._page_lbl.configure(
-                text=T('page_n', n=self._page)))
+            blocked = False
+            try:
+                data = fetch_page_data(browser, url)
+                videos = data.get('videos', [])
+            except MirrorsBlockedError:
+                blocked = True
+                videos = []
+            self._ui(lambda: self._apply_page(my_req, videos, page_snapshot, blocked))
 
         threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_page(self, req: int, videos: list[dict], page_snapshot: int, blocked: bool = False):
+        if self._is_closing or req != self._page_req:
+            return
+        if not videos and page_snapshot > 1 and not blocked:
+            self._page = self._last_loaded_page
+            self._has_next = False
+            self._page_lbl.configure(text=T('page_n', n=self._page))
+            return
+        self._videos = videos
+        self._browse_blocked = blocked
+        self._browse_empty_message = ''
+        self._has_next = bool(videos)
+        if videos:
+            self._last_loaded_page = page_snapshot
+            self._page = page_snapshot
+        self._refresh_grid()
+        self._page_lbl.configure(text=T('page_n', n=self._page))
 
     def _refresh_grid(self):
         for w in self._grid_scroll.winfo_children():
             w.destroy()
         self._card_widgets = {}
+        self._grid_gen += 1
+        gen = self._grid_gen
 
         if not self._videos:
-            ctk.CTkLabel(self._grid_scroll, text=T('no_results'),
+            if self._browse_blocked:
+                msg = T('mirrors_blocked')
+            else:
+                msg = self._browse_empty_message or T('no_results')
+            ctk.CTkLabel(self._grid_scroll, text=msg,
                          text_color=TEXT_DIM,
                          font=('Microsoft JhengHei', 14)).pack(pady=40)
             return
-
-        self._grid_gen += 1
-        gen = self._grid_gen
 
         # Create grid of cards, 4 per row
         row_frame = None
@@ -929,6 +1040,8 @@ class ModernApp(ctk.CTk):
         main thread via .after() so Tk widget updates stay thread-safe.
         The gen counter prevents stale thumbs from polluting a newer page."""
         def _worker():
+            if self._is_closing or gen != self._grid_gen:
+                return
             img = _fetch_thumbnail(thumb_url)
             if img is None:
                 return
@@ -946,8 +1059,11 @@ class ModernApp(ctk.CTk):
                     label._ctk_img_ref = ctk_img
                 except Exception:
                     pass
-            self.after(0, _apply)
-        threading.Thread(target=_worker, daemon=True).start()
+            self._ui(_apply)
+        try:
+            self._thumb_executor.submit(_worker)
+        except RuntimeError:
+            pass
 
     def _toggle_select(self, url: str):
         if url in self._selected_urls:
@@ -971,6 +1087,8 @@ class ModernApp(ctk.CTk):
     def _goto_page(self, p: int):
         if p < 1:
             return
+        if p > self._page and not self._has_next:
+            return
         self._page = p
         self._load_page()
 
@@ -978,7 +1096,7 @@ class ModernApp(ctk.CTk):
         """Jump to page number entered in the page-jump field."""
         try:
             p = int(self._page_jump_var.get().strip())
-            if p >= 1:
+            if p >= 1 and not (p > self._page and not self._has_next):
                 self._goto_page(p)
         except (ValueError, TypeError):
             pass
@@ -1000,7 +1118,7 @@ class ModernApp(ctk.CTk):
         self._selected_urls.clear()
         self._sel_lbl.configure(text='')
         self._rebuild_sidebar()
-        threading.Thread(target=self._load_categories, daemon=True).start()
+        self._load_categories()
 
     def _on_cat_change(self, val):
         idx = next((i for i, c in enumerate(self._categories)
@@ -1009,7 +1127,10 @@ class ModernApp(ctk.CTk):
             return
         self._current_base_url = self._categories[idx]['url']
         self._page = 1
+        self._last_loaded_page = 1
         self._has_next = True
+        self._browse_blocked = False
+        self._browse_empty_message = ''
         self._selected_urls.clear()
         self._sel_lbl.configure(text='')
         self._load_page()
@@ -1029,7 +1150,10 @@ class ModernApp(ctk.CTk):
             else:
                 self._current_base_url = f'https://missav.ai/search/{eq}'
         self._page = 1
+        self._last_loaded_page = 1
         self._has_next = True
+        self._browse_blocked = False
+        self._browse_empty_message = ''
         self._selected_urls.clear()
         self._sel_lbl.configure(text='')
         self._load_page()
@@ -1037,7 +1161,10 @@ class ModernApp(ctk.CTk):
     def _on_tag_click(self, url: str, name: str):
         self._current_base_url = url
         self._page = 1
+        self._last_loaded_page = 1
         self._has_next = True
+        self._browse_blocked = False
+        self._browse_empty_message = ''
         self._selected_urls.clear()
         self._sel_lbl.configure(text='')
         self._cat_var.set(f'🏷 {name}')
@@ -1141,17 +1268,19 @@ class ModernApp(ctk.CTk):
 
     def _is_listing_url(self, url: str) -> bool:
         """Check if URL is a JableTV or MissAV listing/category/actress page."""
-        return (url.startswith('https://jable.tv/') or
-                bool(re.match(r'https://(?:www\.)?missav\.(?:ai|ws)/', url)))
+        return (bool(re.match(r'https://(?:www\.)?(?:jable\.tv|fs1\.app)/', url)) or
+                bool(re.match(r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/', url)))
 
     def _crawl_listing(self, url: str):
         """Crawl a listing URL across all pages; add every video to the queue."""
         dest = self._dest_var.get() or 'download'
         seen: set[str] = set()
-        is_jable = url.startswith('https://jable.tv/')
+        is_jable = bool(re.match(r'https://(?:www\.)?(?:jable\.tv|fs1\.app)/', url))
         max_pages = 50
 
         for page in range(1, max_pages + 1):
+            if self._is_closing:
+                return
             try:
                 if is_jable:
                     if page == 1:
@@ -1164,6 +1293,10 @@ class ModernApp(ctk.CTk):
                 else:
                     page_url = MissAVBrowser.page_url(url, page)
                     videos = MissAVBrowser.fetch_page(page_url)
+            except MirrorsBlockedError as e:
+                print(f'[crawl] page {page} blocked: {e}')
+                self._ui(lambda: self._status_lbl.configure(text=T('mirrors_blocked')))
+                return
             except Exception as e:
                 print(f'[crawl] page {page} error: {e}')
                 break
@@ -1186,11 +1319,11 @@ class ModernApp(ctk.CTk):
             if new_count == 0:
                 break  # No new videos on this page, stop
 
-            self.after(0, lambda n=len(seen): self._status_lbl.configure(
+            self._ui(lambda n=len(seen): self._status_lbl.configure(
                 text=T('crawling_url') + f' ({n})'))
 
         n = len(seen)
-        self.after(0, lambda: self._status_lbl.configure(
+        self._ui(lambda: self._status_lbl.configure(
             text=T('crawl_added', n=n)))
 
     def _download_all(self):
@@ -1250,75 +1383,86 @@ class ModernApp(ctk.CTk):
         import subprocess, platform
         dest = self._dest_var.get() or 'download'
         folder = os.path.abspath(dest)
-        os.makedirs(folder, exist_ok=True)
+        if not os.path.isdir(folder):
+            messagebox.showerror(T('open_folder_failed_title'), folder)
+            return
         system = platform.system()
-        if system == 'Windows':
-            os.startfile(folder)
-        elif system == 'Darwin':
-            subprocess.Popen(['open', folder])
-        else:
-            subprocess.Popen(['xdg-open', folder])
+        try:
+            if system == 'Windows':
+                os.startfile(folder)
+            elif system == 'Darwin':
+                subprocess.Popen(['open', folder])
+            else:
+                subprocess.Popen(['xdg-open', folder])
+        except OSError as e:
+            messagebox.showerror(T('open_folder_failed_title'), str(e))
 
     # ── Download list refresh (incremental — no destroy/rebuild storm) ──
     _STATE_COLORS = {
         '下載中': ACCENT, '準備中': ACCENT2, '等待中': WARNING,
         '已下載': SUCCESS, '未完成': WARNING, '已取消': TEXT_DIM,
-        '網址錯誤': ERROR_C,
+        '網址錯誤': ERROR_C, '封鎖/解析失敗': ERROR_C,
     }
 
     def _refresh_downloads(self):
         if self._is_closing:
             return
+        try:
+            items = self._dlmgr.get_items()
+            current_urls = {i.url for i in items}
 
-        items = self._dlmgr.get_items()
-        current_urls = {i.url for i in items}
+            # Remove rows for items no longer present
+            for url in list(self._dl_rows.keys()):
+                if url not in current_urls:
+                    widgets = self._dl_rows.pop(url)
+                    try:
+                        widgets['row'].destroy()
+                    except Exception:
+                        pass
 
-        # Remove rows for items no longer present
-        for url in list(self._dl_rows.keys()):
-            if url not in current_urls:
-                widgets = self._dl_rows.pop(url)
+            # Toggle empty placeholder
+            if not items:
+                if self._dl_empty_lbl is None:
+                    self._dl_empty_lbl = ctk.CTkLabel(
+                        self._dl_scroll, text='下載清單是空的',
+                        text_color=TEXT_DIM,
+                        font=('Microsoft JhengHei', 13))
+                    self._dl_empty_lbl.pack(pady=40)
+            else:
+                if self._dl_empty_lbl is not None:
+                    try:
+                        self._dl_empty_lbl.destroy()
+                    except Exception:
+                        pass
+                    self._dl_empty_lbl = None
+
+                # Create or update each row
+                for item in items:
+                    if item.url in self._dl_rows:
+                        self._update_dl_row(self._dl_rows[item.url], item)
+                    else:
+                        self._dl_rows[item.url] = self._build_dl_row(item)
+
+            # Update status bar
+            a = self._dlmgr.active_count
+            p = self._dlmgr.pending_count
+            parts = []
+            if a:
+                parts.append(f'下載中 {a}/{self._dlmgr.max_concurrent}')
+            if p:
+                parts.append(f'等待中 {p}')
+            done = sum(1 for i in items if i.state == '已下載')
+            if done:
+                parts.append(f'已完成 {done}')
+            self._status_lbl.configure(text='  |  '.join(parts) if parts else '就緒')
+        except tk.TclError:
+            pass
+        finally:
+            if not self._is_closing:
                 try:
-                    widgets['row'].destroy()
-                except Exception:
+                    self.after(1000, self._refresh_downloads)
+                except tk.TclError:
                     pass
-
-        # Toggle empty placeholder
-        if not items:
-            if self._dl_empty_lbl is None:
-                self._dl_empty_lbl = ctk.CTkLabel(
-                    self._dl_scroll, text='下載清單是空的',
-                    text_color=TEXT_DIM,
-                    font=('Microsoft JhengHei', 13))
-                self._dl_empty_lbl.pack(pady=40)
-        else:
-            if self._dl_empty_lbl is not None:
-                try:
-                    self._dl_empty_lbl.destroy()
-                except Exception:
-                    pass
-                self._dl_empty_lbl = None
-
-            # Create or update each row
-            for item in items:
-                if item.url in self._dl_rows:
-                    self._update_dl_row(self._dl_rows[item.url], item)
-                else:
-                    self._dl_rows[item.url] = self._build_dl_row(item)
-
-        # Update status bar
-        a = self._dlmgr.active_count
-        p = self._dlmgr.pending_count
-        parts = []
-        if a:
-            parts.append(f'下載中 {a}/{self._dlmgr.max_concurrent}')
-        if p:
-            parts.append(f'等待中 {p}')
-        done = sum(1 for i in items if i.state == '已下載')
-        if done:
-            parts.append(f'已完成 {done}')
-        self._status_lbl.configure(text='  |  '.join(parts) if parts else '就緒')
-
-        self.after(1000, self._refresh_downloads)
 
     def _build_dl_row(self, item: DownloadItem) -> dict:
         """Build one download row once; return widget handles for in-place updates."""
@@ -1365,7 +1509,7 @@ class ModernApp(ctk.CTk):
             'row': row, 'state_lbl': state_lbl, 'name_lbl': name_lbl,
             'pb': pb, 'pct_lbl': pct_lbl, 'spd_lbl': spd_lbl,
             'pb_visible': False, 'pct_visible': False, 'spd_visible': False,
-            'last_state': None, 'last_name': None,
+            'last_state': None, 'last_name': None, 'last_error': None,
             'last_progress': -1, 'last_speed': None,
         }
         self._update_dl_row(widgets, item)
@@ -1384,12 +1528,18 @@ class ModernApp(ctk.CTk):
 
         # Name (may arrive after creation once metadata is scraped)
         display_name = item.name or item.url
-        if w['last_name'] != display_name:
+        if item.error and item.state in ('未完成', '封鎖/解析失敗'):
+            err = item.error.replace('\n', ' ').strip()
+            if len(err) > 80:
+                err = err[:77] + '...'
+            display_name = f'{display_name} - {err}'
+        if w['last_name'] != display_name or w['last_error'] != item.error:
             try:
                 w['name_lbl'].configure(text=display_name)
             except Exception:
                 return
             w['last_name'] = display_name
+            w['last_error'] = item.error
 
         # Progress bar: show only while downloading
         is_downloading = (item.state == '下載中' and item.progress > 0)
@@ -1454,6 +1604,10 @@ class ModernApp(ctk.CTk):
     # ── Close ────────────────────────────────────────────────────────
     def _on_close(self):
         self._is_closing = True
+        try:
+            self._thumb_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         self._dlmgr.cancel_all()
         self._dlmgr.save_csv(CSV_PATH)
         self.destroy()

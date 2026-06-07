@@ -35,6 +35,7 @@ except Exception:
 import M3U8Sites
 from M3U8Sites.SiteJableTV import JableTVBrowser
 from M3U8Sites.SiteMissAV import MissAVBrowser
+from M3U8Sites.M3U8Crawler import fetch_with_mirrors, MirrorsBlockedError
 
 # Optional direct-fetch fallback for diagnostics / when cloudscraper struggles
 try:
@@ -51,6 +52,7 @@ DEFAULT_BASELINE_DATE = _yesterday.strftime('%Y-%m-%d')
 DEFAULT_BASELINE_DT = datetime(_yesterday.year, _yesterday.month, _yesterday.day, tzinfo=timezone.utc)
 PER_VIDEO_FETCH_DELAY_SEC = 0.3
 CHECK_INTERVAL_SEC = 24 * 60 * 60  # 24 hours
+SCAN_RETRY_BACKOFF_SEC = 10 * 60
 MAX_SCAN_PAGES = 50
 DAILY_SCAN_PAGES = 3
 MAX_CONCURRENT = 2
@@ -121,6 +123,15 @@ def _ensure_state_dir() -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
 
 
+def _atomic_write(path: str, text: str) -> None:
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def load_config() -> dict:
     _ensure_state_dir()
     if os.path.exists(CONFIG_PATH):
@@ -139,8 +150,7 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     _ensure_state_dir()
-    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    _atomic_write(CONFIG_PATH, json.dumps(cfg, indent=2, ensure_ascii=False))
 
 
 def load_seen() -> dict:
@@ -156,22 +166,27 @@ def load_seen() -> dict:
 
 def save_seen(seen: dict) -> None:
     _ensure_state_dir()
-    with open(SEEN_PATH, 'w', encoding='utf-8') as f:
-        json.dump(seen, f, indent=2, ensure_ascii=False)
+    _atomic_write(SEEN_PATH, json.dumps(seen, indent=2, ensure_ascii=False))
 
 
 # ── Downloader core ──────────────────────────────────────────────────
 class SmallToolWorker:
     """Background worker that scans selected site/category combos and downloads new videos."""
 
-    def __init__(self, log_fn):
+    def __init__(self, log_fn, status_fn=None):
         self._log = log_fn
+        self._status = status_fn
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._seen = load_seen()
         self._seen_lock = threading.Lock()
         self._progress = None  # (done, total, speed_bps, title) or None
         self._progress_lock = threading.Lock()
+        self._scan_lock = threading.Lock()
+
+    def _set_status(self, text: str, color: str = TEXT_DIM):
+        if self._status:
+            self._status(text, color)
 
     def get_progress(self):
         with self._progress_lock:
@@ -195,13 +210,21 @@ class SmallToolWorker:
         cfg = load_config()
         self._log('Worker started.')
         while not self._stop.is_set():
+            scan_ok = False
             try:
-                self._scan_and_download(cfg)
+                scan_ok = self._scan_and_download(cfg)
             except Exception as e:
                 self._log(f'[ERROR] scan failed: {e}')
+            if self._stop.is_set():
+                break
+            if scan_ok:
+                self._set_status('● 執行中', SUCCESS)
+            else:
+                self._set_status('⚠ 偵測失敗，將重試', WARNING)
             cfg = load_config()
             waited = 0
-            while waited < CHECK_INTERVAL_SEC and not self._stop.is_set():
+            interval = CHECK_INTERVAL_SEC if scan_ok else SCAN_RETRY_BACKOFF_SEC
+            while waited < interval and not self._stop.is_set():
                 time.sleep(5)
                 waited += 5
         self._log('Worker stopped.')
@@ -271,9 +294,14 @@ class SmallToolWorker:
             return (None, '')
         try:
             scraper = JableTVBrowser._get_scraper()
-            r = scraper.get(vurl, timeout=30)
-            if r.status_code != 200:
-                return (None, f'HTTP {r.status_code}')
+            def _validate(resp):
+                s = BeautifulSoup(resp.content, 'html.parser')
+                return bool(s.find(class_='info-header'))
+            r, host, reason = fetch_with_mirrors(scraper, vurl, 'jable', _validate, timeout=30)
+            if reason == 'blocked':
+                return (None, 'BLOCKED')
+            if reason != 'ok':
+                return (None, '')
             soup = BeautifulSoup(r.content, 'html.parser')
             info = soup.find(class_='info-header')
             if not info:
@@ -292,9 +320,16 @@ class SmallToolWorker:
             return (None, '')
         try:
             scraper = MissAVBrowser._get_scraper()
-            r = scraper.get(vurl, timeout=30)
-            if r.status_code != 200:
-                return (None, f'HTTP {r.status_code}')
+            def _validate(resp):
+                s = BeautifulSoup(resp.content, 'html.parser')
+                page_text = s.get_text(' ', strip=True)
+                return bool(re.search(r'(発売日|發售日|配信開始日|Release\s*Date|上架日期|更新)', page_text, re.I) or
+                            s.find('meta', property='og:title') or 'og:title' in resp.text)
+            r, host, reason = fetch_with_mirrors(scraper, vurl, 'missav', _validate, timeout=30)
+            if reason == 'blocked':
+                return (None, 'BLOCKED')
+            if reason != 'ok':
+                return (None, '')
 
             soup = BeautifulSoup(r.content, 'html.parser')
             page_text = soup.get_text(' ', strip=True)
@@ -339,6 +374,8 @@ class SmallToolWorker:
         browser = SITES[site_name]['browser']
         try:
             return browser.fetch_page(url)
+        except MirrorsBlockedError:
+            raise
         except Exception as e:
             self._log(f'  [ERR] fetch failed: {e}')
             return []
@@ -358,16 +395,25 @@ class SmallToolWorker:
             return f'{base_url}{sep}page={page}'
 
     def _scan_and_download(self, cfg: dict):
+        if not self._scan_lock.acquire(blocking=False):
+            self._log('[WAIT] 背景偵測執行中，請稍候')
+            return False
+        try:
+            return self._scan_and_download_locked(cfg)
+        finally:
+            self._scan_lock.release()
+
+    def _scan_and_download_locked(self, cfg: dict):
         dest = cfg.get('output_folder') or ''
         if not dest:
             self._log('[WAIT] No output folder configured.')
-            return
+            return True
         os.makedirs(dest, exist_ok=True)
 
         targets = cfg.get('selected_targets', [])
         if not targets:
             self._log('[WAIT] No sites/categories selected.')
-            return
+            return True
 
         baseline_str = cfg.get('baseline_date', DEFAULT_BASELINE_DATE)
         try:
@@ -382,10 +428,12 @@ class SmallToolWorker:
                   f'{len(targets)} target(s), baseline {baseline_str}')
 
         all_new_videos = []
+        scan_blocked = False
+        scan_had_success = False
 
         for target in targets:
             if self._stop.is_set():
-                return
+                return False
             site_name = target['site']
             cat_name = target['category']
 
@@ -412,13 +460,19 @@ class SmallToolWorker:
 
             for page in range(1, max_pages + 1):
                 if self._stop.is_set():
-                    return
+                    return False
                 if reached_baseline:
                     break
 
                 page_url = self._build_page_url(site_name, base_url, page)
                 self._log(f'  Page {page}: {page_url}')
-                videos = self._fetch_page_for_site(site_name, page_url)
+                try:
+                    videos = self._fetch_page_for_site(site_name, page_url)
+                except MirrorsBlockedError:
+                    scan_blocked = True
+                    self._log(f'  [BLOCKED] Cloudflare blocked all mirrors: {page_url}')
+                    break
+                scan_had_success = True
                 if not videos:
                     self._log(f'  Page {page}: no videos — end.')
                     break
@@ -428,7 +482,7 @@ class SmallToolWorker:
 
                 for v in videos:
                     if self._stop.is_set():
-                        return
+                        return False
                     vurl = v.get('url', '')
                     if not vurl:
                         continue
@@ -441,6 +495,9 @@ class SmallToolWorker:
                     if site_name == 'JableTV':
                         video_dt, rel_text = self._fetch_video_date(vurl)
                         time.sleep(PER_VIDEO_FETCH_DELAY_SEC)
+                        if rel_text == 'BLOCKED':
+                            self._log(f'    [BLOCKED] defer date check: {vurl}')
+                            continue
                         if video_dt is None:
                             self._log(f'    [SKIP] no date ({rel_text!r}): {vurl}')
                             consecutive_skips += 1
@@ -461,6 +518,17 @@ class SmallToolWorker:
                         # MissAV: fetch detail page for release date
                         video_dt, rel_text = self._fetch_missav_video_date(vurl)
                         time.sleep(PER_VIDEO_FETCH_DELAY_SEC)
+                        if rel_text == 'BLOCKED':
+                            self._log(f'    [BLOCKED] defer date check: {vurl}')
+                            continue
+                        if video_dt is None:
+                            self._log(f'    [SKIP] no confirmed date ({rel_text!r}): {vurl}')
+                            consecutive_skips += 1
+                            if consecutive_skips >= 10:
+                                self._log(f'  10 consecutive skips — moving to next category.')
+                                reached_baseline = True
+                                break
+                            continue
                         if video_dt is not None and video_dt < baseline_dt:
                             slug = vurl.rstrip('/').split('/')[-1]
                             self._log(f'    [SKIP] {slug} — {rel_text} (before {baseline_str})')
@@ -472,10 +540,7 @@ class SmallToolWorker:
                                 break
                             continue
                         consecutive_skips = 0
-                        if video_dt:
-                            self._log(f'    [KEEP] {vurl.rstrip("/").split("/")[-1]} — {rel_text}')
-                        else:
-                            self._log(f'    [KEEP] {v.get("title", vurl)[:60]}')
+                        self._log(f'    [KEEP] {vurl.rstrip("/").split("/")[-1]} — {rel_text}')
 
                     v['_site'] = site_name
                     all_new_videos.append(v)
@@ -486,19 +551,26 @@ class SmallToolWorker:
 
         if not all_new_videos:
             self._log(f'No new videos found.')
+            if scan_blocked or not scan_had_success:
+                self._log('[WARN] Scan incomplete — will retry before marking first run done.')
+                return False
             cfg['first_run_done'] = True
             save_config(cfg)
-            return
+            return True
 
         self._log(f'Found {len(all_new_videos)} new video(s). Downloading...')
         for v in all_new_videos:
             if self._stop.is_set():
-                return
+                return False
             self._download_one(v, dest)
 
+        if scan_blocked or not scan_had_success:
+            self._log('[WARN] Scan incomplete — first run flag not updated.')
+            return False
         cfg['first_run_done'] = True
         cfg['last_check_iso'] = datetime.now(timezone.utc).isoformat()
         save_config(cfg)
+        return True
 
     def _download_one(self, video: dict, dest: str):
         vurl = video['url']
@@ -566,7 +638,7 @@ class SmallToolWorker:
 class SmallToolApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f'{APP_NAME} v2.3.1 — 多站自動下載工具 — by ALOS')
+        self.title(f'{APP_NAME} v2.3.2 — 多站自動下載工具 — by ALOS')
         self.geometry('860x680')
         self.minsize(700, 550)
         self.configure(bg=BG_DARK)
@@ -574,7 +646,8 @@ class SmallToolApp(tk.Tk):
         self._cfg = load_config()
         self._log_queue: list[str] = []
         self._log_lock = threading.Lock()
-        self._worker = SmallToolWorker(log_fn=self._enqueue_log)
+        self._worker = SmallToolWorker(log_fn=self._enqueue_log,
+                                       status_fn=self._set_status_threadsafe)
         self._check_vars: dict[str, tk.BooleanVar] = {}  # "site|cat" -> BooleanVar
 
         self._build_ui()
@@ -623,7 +696,7 @@ class SmallToolApp(tk.Tk):
         tk.Label(hdr, text='多站自動下載',
                  bg=BG_HEADER, fg=TEXT_SEC,
                  font=('Microsoft JhengHei', 11)).pack(side='left', padx=(0, 8))
-        tk.Label(hdr, text='v2.3.1  |  by ALOS',
+        tk.Label(hdr, text='v2.3.2  |  by ALOS',
                  bg=BG_HEADER, fg=TEXT_DIM,
                  font=('Microsoft JhengHei', 10)).pack(side='right', padx=14)
 
@@ -832,10 +905,24 @@ class SmallToolApp(tk.Tk):
                     targets.append({'site': site_name, 'category': cat_name})
         return targets
 
-    def _save_selections_to_config(self):
+    def _validate_baseline_date(self) -> Optional[str]:
+        date_str = self._date_var.get().strip()
+        try:
+            datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showwarning('日期格式錯誤', '基準日期格式應為 YYYY-MM-DD。')
+            return None
+        return date_str
+
+    def _save_selections_to_config(self, date_str: Optional[str] = None) -> bool:
+        if date_str is None:
+            date_str = self._validate_baseline_date()
+            if not date_str:
+                return False
         self._cfg['selected_targets'] = self._get_selected_targets()
-        self._cfg['baseline_date'] = self._date_var.get().strip()
+        self._cfg['baseline_date'] = date_str
         save_config(self._cfg)
+        return True
 
     def _load_selections_from_config(self):
         targets = self._cfg.get('selected_targets', [])
@@ -870,17 +957,14 @@ class SmallToolApp(tk.Tk):
             messagebox.showwarning('未選擇分類', '請至少勾選一個網站分類。')
             return
 
-        # Validate date
-        date_str = self._date_var.get().strip()
-        try:
-            datetime.strptime(date_str, '%Y-%m-%d')
-        except ValueError:
-            messagebox.showwarning('日期格式錯誤', '基準日期格式應為 YYYY-MM-DD。')
+        date_str = self._validate_baseline_date()
+        if not date_str:
             return
 
         self._cfg['output_folder'] = folder
         self._cfg['baseline_date'] = date_str
-        self._save_selections_to_config()
+        if not self._save_selections_to_config(date_str):
+            return
 
         sites_summary = ', '.join(set(t['site'] for t in targets))
         cats_summary = ', '.join(t['category'] for t in targets)
@@ -900,6 +984,9 @@ class SmallToolApp(tk.Tk):
         self._status_lbl.configure(text='已停止', fg=TEXT_DIM)
 
     def _check_now(self):
+        if self._worker.is_running():
+            self._log('背景偵測執行中，請稍候')
+            return
         folder = self._folder_var.get().strip()
         if not folder:
             messagebox.showwarning('缺少資料夾', '請先選擇影片儲存資料夾。')
@@ -908,19 +995,41 @@ class SmallToolApp(tk.Tk):
         if not targets:
             messagebox.showwarning('未選擇分類', '請至少勾選一個網站分類。')
             return
-        self._save_selections_to_config()
+        date_str = self._validate_baseline_date()
+        if not date_str:
+            return
+        if not self._save_selections_to_config(date_str):
+            return
+        self._check_now_btn.configure(state='disabled')
 
         def _once():
             cfg = load_config()
             try:
-                self._worker._scan_and_download(cfg)
+                ok = self._worker._scan_and_download(cfg)
+                if not ok:
+                    self._set_status_threadsafe('⚠ 偵測失敗，將重試', WARNING)
             except Exception as e:
                 self._log(f'[ERR] {e}')
+                self._set_status_threadsafe('⚠ 偵測失敗，將重試', WARNING)
+            finally:
+                try:
+                    self.after(0, lambda: self._check_now_btn.configure(state='normal'))
+                except tk.TclError:
+                    pass
 
         threading.Thread(target=_once, daemon=True).start()
         self._log('立即檢查中...')
 
     # ── Logging (thread-safe) ────────────────────────────────────────
+    def _set_status_threadsafe(self, text: str, fg: str = TEXT_DIM):
+        def _apply():
+            if hasattr(self, '_status_lbl'):
+                self._status_lbl.configure(text=text, fg=fg)
+        try:
+            self.after(0, _apply)
+        except tk.TclError:
+            pass
+
     def _enqueue_log(self, msg: str):
         ts = datetime.now().strftime('%H:%M:%S')
         line = f'[{ts}] {msg}'

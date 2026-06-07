@@ -29,9 +29,13 @@ class SiteJableTV(M3U8Crawler):
 
     def get_url_infos(self):
         with _make_scraper() as scraper:
-            htmlfile = scraper.get(self._url, timeout=30)
-        if htmlfile.status_code != 200:
-            raise Exception(f"HTTP {htmlfile.status_code} for {self._url}")
+            def _validate(resp):
+                return ('og:title' in resp.text) and ('m3u8' in resp.text)
+            htmlfile, host, reason = fetch_with_mirrors(scraper, self._url, 'jable', _validate, timeout=30)
+        if reason != 'ok':
+            if reason == 'blocked':
+                raise MirrorsBlockedError("所有鏡像都被 Cloudflare 阻擋（可能是你的網路/IP 信譽問題，請改用 VPN 或不同網路）")
+            raise Exception(f"頁面解析失敗（版面改版或影片不存在）: {self._url}")
         text = htmlfile.text
         title = re.search('og:title".+/>', text)
         image = re.search('og:image".+jpg"', text)
@@ -97,8 +101,11 @@ class JableTVList(SiteUrlList_M3U8):
         divlist = None
         try:
             with _make_scraper() as _scr:
-                htmlfile = _scr.get(url, timeout=30)
-            if htmlfile.status_code == 200:
+                def _validate(resp):
+                    s = BeautifulSoup(resp.content, 'html.parser')
+                    return bool(s.find('div', id=lambda x: x and x.startswith('list_videos')) or s.find('div', id='site-content'))
+                htmlfile, host, reason = fetch_with_mirrors(_scr, url, 'jable', _validate, timeout=30)
+            if reason == 'ok':
                 content = htmlfile.content
                 soup = BeautifulSoup(content, 'html.parser')
                 self._soup = soup
@@ -278,8 +285,11 @@ class JableTVBrowser:
         cats = [{'name': name, 'url': url, 'count': 0, 'section': True}
                 for name, url in cls.HOMEPAGE_SECTIONS]
         try:
-            r = cls._get_scraper().get(f'{cls._url_root}/categories/', timeout=30)
-            if r.status_code != 200:
+            def _validate(resp):
+                s = BeautifulSoup(resp.content, 'html.parser')
+                return bool(s.select('a[href*="/categories/"]'))
+            r, host, reason = fetch_with_mirrors(cls._get_scraper(), f'{cls._url_root}/categories/', 'jable', _validate, timeout=30)
+            if reason != 'ok':
                 return cats
             soup = BeautifulSoup(r.content, 'html.parser')
             for a in soup.select('a[href*="/categories/"]'):
@@ -298,13 +308,17 @@ class JableTVBrowser:
 
     @classmethod
     def fetch_page(cls, url):
+        def _validate(resp):
+            s = BeautifulSoup(resp.content, 'html.parser')
+            dl = s.find('div', id=lambda x: x and x.startswith('list_videos'))
+            return bool(dl and dl.select('div.video-img-box'))
+        resp, host, reason = fetch_with_mirrors(cls._get_scraper(), url, 'jable', _validate)
+        if reason != 'ok':
+            if reason == 'blocked':
+                raise MirrorsBlockedError(url)
+            return []
         try:
-            r = cls._get_scraper().get(url, timeout=30)
-            if r.status_code != 200:
-                import sys
-                print(f'[JableTV] fetch_page {url}: HTTP {r.status_code} (可能 Cloudflare 阻擋)', file=sys.stderr, flush=True)
-                return []
-            soup = BeautifulSoup(r.content, 'html.parser')
+            soup = BeautifulSoup(resp.content, 'html.parser')
             divlist = soup.find('div', id=lambda x: x and x.startswith('list_videos'))
             if divlist is None: return []
             cards = divlist.select('div.video-img-box')
