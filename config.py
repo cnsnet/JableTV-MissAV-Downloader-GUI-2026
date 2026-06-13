@@ -23,6 +23,54 @@ def _cf_store_path():
     return os.path.join(base, 'JableTV Downloader', 'cf_overrides.json')
 
 
+def _ui_prefs_path():
+    return os.path.join(os.path.dirname(_cf_store_path()), 'ui_prefs.json')
+
+
+def get_theme():
+    try:
+        with open(_ui_prefs_path(), 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception:
+        return 'system'
+    if isinstance(raw, dict):
+        mode = raw.get('theme')
+    else:
+        mode = raw
+    if isinstance(mode, str):
+        mode = mode.strip().lower()
+        if mode in {'system', 'light', 'dark'}:
+            return mode
+    return 'system'
+
+
+def set_theme(mode):
+    mode = (mode or '').strip().lower()
+    if mode not in {'system', 'light', 'dark'}:
+        mode = 'system'
+    try:
+        path = _ui_prefs_path()
+        folder = os.path.dirname(path)
+        os.makedirs(folder, exist_ok=True)
+        prefs = {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                prefs = raw
+        except Exception:
+            pass
+        prefs['theme'] = mode
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(prefs, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def _parse_cf_clearance(raw):
     if raw is None:
         return ''

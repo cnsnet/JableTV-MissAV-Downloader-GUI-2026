@@ -28,35 +28,30 @@ from config import headers
 from locales import T, set_lang, get_lang
 
 # ── Design tokens ────────────────────────────────────────────────────
-ACCENT       = '#e94560'
-ACCENT_HOVER = '#d13a52'
-ACCENT_DIM   = '#3a1524'
-ACCENT2      = '#7b61ff'
-ACCENT2_HOVER = '#6a50e0'
-SUCCESS      = '#34d399'
-SUCCESS_DIM  = '#0d3325'
-WARNING      = '#fbbf24'
-WARNING_DIM  = '#3a2e0d'
-ERROR_C      = '#f87171'
-ERROR_DIM    = '#3a1a1a'
-
-BG_DARK      = '#0b0b19'
-BG_CARD      = '#13132c'
-BG_CARD_HOVER = '#1a1a38'
-BG_INPUT     = '#181836'
-BG_HEADER    = '#0e0e20'
-BG_SECTION   = '#111126'
-BG_SIDEBAR   = '#090916'
-BG_BADGE     = '#1e1e3e'
-
-TEXT_PRI     = '#eaeaf4'
-TEXT_SEC     = '#9494b4'
-TEXT_DIM     = '#585878'
-TEXT_LINK    = '#8888cc'
-
-BORDER       = '#242444'
-BORDER_HOVER = '#343460'
-BORDER_CARD  = '#1e1e3c'
+ACCENT        = ('#DC3D43', '#E5484D')
+ACCENT_HOVER  = ('#C8323A', '#D43A40')
+ACCENT_DIM    = ('#FCEBEC', '#2A1719')
+SUCCESS       = ('#2E8B45', '#46A758')
+SUCCESS_DIM   = ('#E6F2E9', '#14271B')
+WARNING       = ('#B97A0A', '#E0A030')
+WARNING_DIM   = ('#FBF3E2', '#2E2410')
+ERROR_C       = ('#C8323A', '#E5707A')
+ERROR_DIM     = ('#FCEBEC', '#2A1719')
+BG_DARK       = ('#FAF9F7', '#131215')
+BG_CARD       = ('#FFFFFF', '#1C1B1F')
+BG_CARD_HOVER = ('#F6F5F2', '#232227')
+BG_INPUT      = ('#FFFFFF', '#1A191D')
+BG_HEADER     = ('#FFFFFF', '#100F12')
+BG_SECTION    = ('#F2F0EC', '#17161B')
+BG_SIDEBAR    = ('#F2F0EC', '#0E0D10')
+BG_BADGE      = ('#F0EEEA', '#1E1E22')
+TEXT_PRI      = ('#1C1A17', '#F2F0EE')
+TEXT_SEC      = ('#6B6760', '#A8A5AE')
+TEXT_DIM      = ('#9B968D', '#6B6872')
+TEXT_LINK     = ('#C8323A', '#E5848A')
+BORDER        = ('#E6E3DE', '#2A2930')
+BORDER_HOVER  = ('#D5D1CA', '#3A3942')
+BORDER_CARD   = ('#E6E3DE', '#242329')
 
 DEFAULT_CONCURRENT = 2
 MAX_CONCURRENT = 10
@@ -347,8 +342,9 @@ class ModernApp(ctk.CTk):
 
         set_lang(lang)
         config.load_cf_overrides()
-        ctk.set_appearance_mode('dark')
-        ctk.set_default_color_theme('dark-blue')
+        self._theme_mode = config.get_theme()
+        ctk.set_appearance_mode(self._theme_mode)
+        ctk.set_default_color_theme('blue')
 
         self.title('JableTV · MissAV · SupJav Downloader — by ALOS')
         self.geometry('1280x800')
@@ -403,6 +399,20 @@ class ModernApp(ctk.CTk):
             pass
 
     # ── Build UI ─────────────────────────────────────────────────────
+    def _theme_glyph(self):
+        return {'system': '◐', 'light': '☀', 'dark': '☾'}.get(self._theme_mode, '◐')
+
+    def _cycle_theme(self):
+        modes = ('system', 'light', 'dark')
+        try:
+            idx = modes.index(self._theme_mode)
+        except ValueError:
+            idx = 0
+        self._theme_mode = modes[(idx + 1) % len(modes)]
+        ctk.set_appearance_mode(self._theme_mode)
+        config.set_theme(self._theme_mode)
+        self._theme_btn.configure(text=self._theme_glyph())
+
     def _build_ui(self):
         # ── Header bar ──────────────────────────────────────────────
         header = ctk.CTkFrame(self, height=56, fg_color=BG_HEADER, corner_radius=0)
@@ -413,16 +423,25 @@ class ModernApp(ctk.CTk):
         brand = ctk.CTkFrame(header, fg_color='transparent')
         brand.pack(side='left', padx=20, fill='y')
         ctk.CTkLabel(brand, text='JableTV · MissAV · SupJav',
-                     font=('Microsoft JhengHei', 17, 'bold'),
+                     font=('Georgia', 18, 'bold'),
                      text_color=TEXT_PRI).pack(side='left', pady=0)
         ctk.CTkLabel(brand, text='Downloader',
-                     font=('Microsoft JhengHei', 17),
+                     font=('Georgia', 18),
                      text_color=ACCENT).pack(side='left', padx=(8, 0))
 
         # Right info
-        ctk.CTkLabel(header, text='v2.3.4  |  by ALOS',
+        right_info = ctk.CTkFrame(header, fg_color='transparent')
+        right_info.pack(side='right', padx=20, fill='y')
+        ctk.CTkLabel(right_info, text='v2.4.0  |  by ALOS',
                      font=('Consolas', 10),
-                     text_color=TEXT_DIM).pack(side='right', padx=20)
+                     text_color=TEXT_DIM).pack(side='right')
+        self._theme_btn = ctk.CTkButton(
+            right_info, text=self._theme_glyph(), width=34, height=34,
+            corner_radius=8, fg_color=BG_CARD, border_width=1,
+            border_color=BORDER, hover_color=BG_CARD_HOVER,
+            text_color=TEXT_SEC, font=('Microsoft JhengHei', 14),
+            command=self._cycle_theme)
+        self._theme_btn.pack(side='right', padx=(0, 10), pady=11)
 
         # Header separator
         ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).pack(fill='x')
@@ -430,10 +449,11 @@ class ModernApp(ctk.CTk):
         # ── Tab view ────────────────────────────────────────────────
         self._tabs = ctk.CTkTabview(self, fg_color=BG_DARK,
                                      segmented_button_fg_color=BG_HEADER,
-                                     segmented_button_selected_color=ACCENT,
-                                     segmented_button_unselected_color=BG_CARD,
-                                     segmented_button_selected_hover_color=ACCENT_HOVER,
+                                     segmented_button_selected_color=BG_CARD,
+                                     segmented_button_selected_hover_color=BG_CARD_HOVER,
+                                     segmented_button_unselected_color=BG_HEADER,
                                      segmented_button_unselected_hover_color=BG_CARD_HOVER,
+                                     text_color=TEXT_SEC,
                                      corner_radius=0)
         self._tabs.pack(fill='both', expand=True, padx=0, pady=0)
         self._tabs.add(T('tab_browse'))
@@ -459,7 +479,7 @@ class ModernApp(ctk.CTk):
         tab = self._tabs.tab(T('tab_browse'))
 
         # ── Top toolbar ─────────────────────────────────────────────
-        top = ctk.CTkFrame(tab, fg_color=BG_SECTION, corner_radius=0, height=54)
+        top = ctk.CTkFrame(tab, fg_color=BG_SECTION, corner_radius=0, height=58)
         top.pack(fill='x')
         top.pack_propagate(False)
 
@@ -473,8 +493,10 @@ class ModernApp(ctk.CTk):
         self._site_menu = ctk.CTkOptionMenu(
             left, values=list(SITES.keys()), variable=self._site_var,
             command=self._on_site_change, width=110,
-            fg_color=BG_INPUT, button_color=ACCENT,
-            button_hover_color=ACCENT_HOVER, corner_radius=6)
+            fg_color=BG_INPUT, button_color=BORDER_HOVER,
+            button_hover_color=ACCENT, text_color=TEXT_PRI,
+            dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+            dropdown_text_color=TEXT_PRI, corner_radius=8)
         self._site_menu.pack(side='left', padx=(0, 8))
 
         # Vertical divider
@@ -487,8 +509,10 @@ class ModernApp(ctk.CTk):
         self._cat_menu = ctk.CTkOptionMenu(
             left, values=[T('loading_browse')], variable=self._cat_var,
             command=self._on_cat_change, width=170,
-            fg_color=BG_INPUT, button_color=ACCENT,
-            button_hover_color=ACCENT_HOVER, corner_radius=6)
+            fg_color=BG_INPUT, button_color=BORDER_HOVER,
+            button_hover_color=ACCENT, text_color=TEXT_PRI,
+            dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+            dropdown_text_color=TEXT_PRI, corner_radius=8)
         self._cat_menu.pack(side='left')
 
         # Center: Search
@@ -500,14 +524,15 @@ class ModernApp(ctk.CTk):
                                      placeholder_text=T('search_placeholder'),
                                      width=220, height=32,
                                      fg_color=BG_INPUT, border_color=BORDER,
-                                     border_width=1, corner_radius=6,
+                                     border_width=1, corner_radius=8,
                                      text_color=TEXT_PRI)
         search_entry.pack(side='left', padx=(0, 6))
         search_entry.bind('<Return>', lambda e: self._on_search())
         ctk.CTkButton(center, text=T('search_btn'), command=self._on_search,
-                      width=64, height=32, corner_radius=6,
+                      width=64, height=32, corner_radius=8,
                       fg_color=ACCENT,
-                      hover_color=ACCENT_HOVER).pack(side='left')
+                      hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF')).pack(side='left')
 
         # Right: Selection controls
         right = ctk.CTkFrame(top, fg_color='transparent')
@@ -517,17 +542,18 @@ class ModernApp(ctk.CTk):
                                       font=('Microsoft JhengHei', 11, 'bold'))
         self._sel_lbl.pack(side='right', padx=8)
         ctk.CTkButton(right, text=T('select_all_btn'), command=self._select_all_on_page,
-                      width=80, height=32, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      width=80, height=32, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER,
                       text_color=TEXT_PRI).pack(side='right', padx=4)
         ctk.CTkButton(right, text=T('download_selected'), command=self._download_selected,
-                      width=100, height=32, corner_radius=6,
+                      width=100, height=32, corner_radius=8,
                       fg_color=ACCENT,
-                      hover_color=ACCENT_HOVER).pack(side='right', padx=4)
+                      hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF')).pack(side='right', padx=4)
         ctk.CTkButton(right, text=T('clear_list'), command=self._add_selected_to_queue,
-                      width=80, height=32, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      width=80, height=32, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER,
                       text_color=TEXT_PRI).pack(side='right', padx=4)
 
@@ -538,7 +564,8 @@ class ModernApp(ctk.CTk):
         # Sidebar
         self._sidebar = ctk.CTkScrollableFrame(
             content, width=145, fg_color=BG_SIDEBAR,
-            corner_radius=0, scrollbar_button_color=BORDER)
+            corner_radius=0, scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=BORDER_HOVER)
         self._sidebar.pack(side='left', fill='y')
 
         # Video grid area
@@ -546,7 +573,9 @@ class ModernApp(ctk.CTk):
         grid_area.pack(side='left', fill='both', expand=True)
 
         self._grid_scroll = ctk.CTkScrollableFrame(
-            grid_area, fg_color=BG_DARK, corner_radius=0)
+            grid_area, fg_color=BG_DARK, corner_radius=0,
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=BORDER_HOVER)
         self._grid_scroll.pack(fill='both', expand=True)
 
         # ── Navigation bar ──────────────────────────────────────────
@@ -558,13 +587,13 @@ class ModernApp(ctk.CTk):
         nav_inner.pack(pady=6)
 
         ctk.CTkButton(nav_inner, text=T('first_page'), width=64, height=30,
-                      corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=lambda: self._goto_page(1)).pack(side='left', padx=3)
         ctk.CTkButton(nav_inner, text=T('prev_page'), width=74, height=30,
-                      corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=lambda: self._goto_page(self._page - 1)
                       ).pack(side='left', padx=3)
@@ -573,9 +602,10 @@ class ModernApp(ctk.CTk):
                                        width=80)
         self._page_lbl.pack(side='left', padx=10)
         ctk.CTkButton(nav_inner, text=T('next_page'), width=74, height=30,
-                      corner_radius=6,
+                      corner_radius=8,
                       fg_color=ACCENT,
                       hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF'),
                       command=lambda: self._goto_page(self._page + 1)
                       ).pack(side='left', padx=3)
 
@@ -584,7 +614,7 @@ class ModernApp(ctk.CTk):
             side='left', fill='y', pady=4, padx=10)
         self._page_jump_var = ctk.StringVar(value='')
         page_entry = ctk.CTkEntry(nav_inner, textvariable=self._page_jump_var,
-                                   width=50, height=30, corner_radius=6,
+                                   width=50, height=30, corner_radius=8,
                                    fg_color=BG_INPUT, border_color=BORDER,
                                    border_width=1, text_color=TEXT_PRI,
                                    placeholder_text='#',
@@ -592,8 +622,8 @@ class ModernApp(ctk.CTk):
         page_entry.pack(side='left', padx=3)
         page_entry.bind('<Return>', lambda e: self._jump_to_page())
         ctk.CTkButton(nav_inner, text='Go', width=40, height=30,
-                      corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._jump_to_page).pack(side='left', padx=3)
 
@@ -614,16 +644,16 @@ class ModernApp(ctk.CTk):
                      font=('Microsoft JhengHei', 10), anchor='e').pack(side='left')
         self._dest_var = ctk.StringVar(value=self._dest)
         ctk.CTkEntry(row1, textvariable=self._dest_var,
-                     height=34, corner_radius=6,
+                     height=34, corner_radius=8,
                      fg_color=BG_INPUT, border_color=BORDER, border_width=1,
                      text_color=TEXT_PRI).pack(side='left', fill='x',
                                                expand=True, padx=10)
-        ctk.CTkButton(row1, text=T('browse_folder'), width=60, height=34, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+        ctk.CTkButton(row1, text=T('browse_folder'), width=60, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._pick_dest).pack(side='left')
-        ctk.CTkButton(row1, text='Open', width=50, height=34, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+        ctk.CTkButton(row1, text='Open', width=50, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._open_dest_folder).pack(side='left', padx=(6, 0))
 
@@ -634,7 +664,7 @@ class ModernApp(ctk.CTk):
                      font=('Microsoft JhengHei', 10), anchor='e').pack(side='left')
         self._dl_url_var = ctk.StringVar(value=self._url_input)
         ctk.CTkEntry(row2, textvariable=self._dl_url_var,
-                     height=34, corner_radius=6,
+                     height=34, corner_radius=8,
                      fg_color=BG_INPUT, border_color=BORDER, border_width=1,
                      text_color=TEXT_PRI).pack(side='left', fill='x',
                                                expand=True, padx=10)
@@ -648,12 +678,14 @@ class ModernApp(ctk.CTk):
         bar.pack_propagate(False)
 
         # Primary actions (left)
-        ctk.CTkButton(bar, text=T('download_btn'), width=95, height=34, corner_radius=6,
+        ctk.CTkButton(bar, text=T('download_btn'), width=95, height=34, corner_radius=8,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF'),
                       font=('Microsoft JhengHei', 11, 'bold'),
                       command=self._download_url).pack(side='left', padx=(12, 4), pady=8)
-        ctk.CTkButton(bar, text=T('download_all_btn'), width=120, height=34, corner_radius=6,
+        ctk.CTkButton(bar, text=T('download_all_btn'), width=120, height=34, corner_radius=8,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF'),
                       command=self._download_all).pack(side='left', padx=4)
 
         # Left separator
@@ -661,13 +693,13 @@ class ModernApp(ctk.CTk):
             side='left', fill='y', pady=12, padx=8)
 
         # Destructive actions (right)
-        ctk.CTkButton(bar, text=T('clear_list'), width=60, height=34, corner_radius=6,
-                      fg_color=ERROR_DIM, border_width=1, border_color='#4a2020',
-                      hover_color='#2a1215', text_color=ERROR_C,
+        ctk.CTkButton(bar, text=T('clear_list'), width=60, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
+                      hover_color=BG_CARD_HOVER, text_color=ERROR_C,
                       command=self._clear_queue).pack(side='right', padx=(4, 12), pady=8)
-        ctk.CTkButton(bar, text=T('cancel_all'), width=80, height=34, corner_radius=6,
-                      fg_color=ERROR_DIM, border_width=1, border_color='#4a2020',
-                      hover_color='#2a1215', text_color=ERROR_C,
+        ctk.CTkButton(bar, text=T('cancel_all'), width=80, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
+                      hover_color=BG_CARD_HOVER, text_color=ERROR_C,
                       command=self._cancel_all).pack(side='right', padx=4)
 
         # Right separator
@@ -682,9 +714,11 @@ class ModernApp(ctk.CTk):
                                         '10 MB/s', '15 MB/s'],
                           variable=self._speed_var,
                           command=self._on_speed_change, width=100, height=34,
-                          corner_radius=6,
-                          fg_color=BG_INPUT, button_color=ACCENT,
-                          button_hover_color=ACCENT_HOVER
+                          corner_radius=8,
+                          fg_color=BG_INPUT, button_color=BORDER_HOVER,
+                          button_hover_color=ACCENT, text_color=TEXT_PRI,
+                          dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+                          dropdown_text_color=TEXT_PRI
                           ).pack(side='right', padx=4, pady=8)
 
         # Separator under action bar
@@ -692,14 +726,19 @@ class ModernApp(ctk.CTk):
 
         # ── Download list ───────────────────────────────────────────
         self._dl_scroll = ctk.CTkScrollableFrame(
-            tab, fg_color=BG_DARK, corner_radius=0)
+            tab, fg_color=BG_DARK, corner_radius=0,
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=BORDER_HOVER)
         self._dl_scroll.pack(fill='both', expand=True)
 
     # ── Settings Tab ─────────────────────────────────────────────────
     def _build_settings_tab(self):
         tab = self._tabs.tab(T('tab_settings'))
 
-        outer = ctk.CTkScrollableFrame(tab, fg_color=BG_DARK, corner_radius=0)
+        outer = ctk.CTkScrollableFrame(
+            tab, fg_color=BG_DARK, corner_radius=0,
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=BORDER_HOVER)
         outer.pack(fill='both', expand=True)
 
         # Content container
@@ -717,8 +756,8 @@ class ModernApp(ctk.CTk):
                      text_color=TEXT_DIM).pack(side='left', padx=(16, 0))
 
         # ── Download Settings Card ──────────────────────────────────
-        grp = ctk.CTkFrame(content, fg_color=BG_SECTION, corner_radius=12,
-                            border_width=1, border_color=BORDER)
+        grp = ctk.CTkFrame(content, fg_color=BG_CARD, corner_radius=12,
+                            border_width=1, border_color=BORDER_CARD)
         grp.pack(fill='x', pady=(0, 16))
 
         # Card header
@@ -737,12 +776,12 @@ class ModernApp(ctk.CTk):
                      font=('Microsoft JhengHei', 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_dest, textvariable=self._dest_var,
-                     height=34, corner_radius=6,
+                     height=34, corner_radius=8,
                      fg_color=BG_INPUT, border_color=BORDER, border_width=1,
                      text_color=TEXT_PRI).pack(side='left', fill='x',
                                                expand=True, padx=10)
-        ctk.CTkButton(row_dest, text=T('browse_folder'), width=60, height=34, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+        ctk.CTkButton(row_dest, text=T('browse_folder'), width=60, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._pick_dest).pack(side='left')
         ctk.CTkLabel(grp, text=T('save_location_desc'),
@@ -759,9 +798,11 @@ class ModernApp(ctk.CTk):
                                               '5 MB/s', '10 MB/s', '15 MB/s'],
                           variable=self._speed_var,
                           command=self._on_speed_change, width=130, height=34,
-                          corner_radius=6,
-                          fg_color=BG_INPUT, button_color=ACCENT,
-                          button_hover_color=ACCENT_HOVER).pack(side='left', padx=10)
+                          corner_radius=8,
+                          fg_color=BG_INPUT, button_color=BORDER_HOVER,
+                          button_hover_color=ACCENT, text_color=TEXT_PRI,
+                          dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+                          dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(grp, text=T('speed_limit_desc'),
                      text_color=TEXT_DIM,
                      font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
@@ -777,9 +818,11 @@ class ModernApp(ctk.CTk):
                           values=[str(i) for i in range(1, MAX_CONCURRENT + 1)],
                           variable=self._conc_var,
                           command=self._on_conc_change, width=80, height=34,
-                          corner_radius=6,
-                          fg_color=BG_INPUT, button_color=ACCENT,
-                          button_hover_color=ACCENT_HOVER).pack(side='left', padx=10)
+                          corner_radius=8,
+                          fg_color=BG_INPUT, button_color=BORDER_HOVER,
+                          button_hover_color=ACCENT, text_color=TEXT_PRI,
+                          dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+                          dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(row_conc, text=T('max_n', n=MAX_CONCURRENT),
                      text_color=TEXT_DIM,
                      font=('Microsoft JhengHei', 10)).pack(side='left')
@@ -798,16 +841,18 @@ class ModernApp(ctk.CTk):
                           values=[T('resolution_highest'), T('resolution_lowest')],
                           variable=self._res_var,
                           command=self._on_res_change, width=180, height=34,
-                          corner_radius=6,
-                          fg_color=BG_INPUT, button_color=ACCENT,
-                          button_hover_color=ACCENT_HOVER).pack(side='left', padx=10)
+                          corner_radius=8,
+                          fg_color=BG_INPUT, button_color=BORDER_HOVER,
+                          button_hover_color=ACCENT, text_color=TEXT_PRI,
+                          dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+                          dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(grp, text=T('resolution_desc'),
                      text_color=TEXT_DIM,
                      font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 20))
 
         # Cloudflare bypass
-        cf = ctk.CTkFrame(content, fg_color=BG_SECTION, corner_radius=12,
-                          border_width=1, border_color=BORDER)
+        cf = ctk.CTkFrame(content, fg_color=BG_CARD, corner_radius=12,
+                          border_width=1, border_color=BORDER_CARD)
         cf.pack(fill='x', pady=(0, 16))
 
         cf_hdr = ctk.CTkFrame(cf, fg_color='transparent')
@@ -835,9 +880,11 @@ class ModernApp(ctk.CTk):
         ctk.CTkOptionMenu(row_host, values=hosts,
                           variable=self._cf_host_var,
                           command=self._on_cf_host_change, width=220, height=34,
-                          corner_radius=6,
-                          fg_color=BG_INPUT, button_color=ACCENT,
-                          button_hover_color=ACCENT_HOVER).pack(side='left', padx=10)
+                          corner_radius=8,
+                          fg_color=BG_INPUT, button_color=BORDER_HOVER,
+                          button_hover_color=ACCENT, text_color=TEXT_PRI,
+                          dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+                          dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
 
         row_cookie = ctk.CTkFrame(cf, fg_color='transparent')
         row_cookie.pack(fill='x', padx=20, pady=(8, 2))
@@ -845,7 +892,7 @@ class ModernApp(ctk.CTk):
                      font=('Microsoft JhengHei', 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_cookie, textvariable=self._cf_cookie_var,
-                     height=34, corner_radius=6,
+                     height=34, corner_radius=8,
                      fg_color=BG_INPUT, border_color=BORDER, border_width=1,
                      text_color=TEXT_PRI).pack(side='left', fill='x',
                                                expand=True, padx=10)
@@ -856,18 +903,19 @@ class ModernApp(ctk.CTk):
                      font=('Microsoft JhengHei', 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_ua, textvariable=self._cf_ua_var,
-                     height=34, corner_radius=6,
+                     height=34, corner_radius=8,
                      fg_color=BG_INPUT, border_color=BORDER, border_width=1,
                      text_color=TEXT_PRI).pack(side='left', fill='x',
                                                expand=True, padx=10)
 
         row_actions = ctk.CTkFrame(cf, fg_color='transparent')
         row_actions.pack(fill='x', padx=20, pady=(10, 2))
-        ctk.CTkButton(row_actions, text=T('cf_save'), width=70, height=34, corner_radius=6,
+        ctk.CTkButton(row_actions, text=T('cf_save'), width=70, height=34, corner_radius=8,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      text_color=('#FFFFFF', '#FFFFFF'),
                       command=self._on_cf_save).pack(side='left', padx=(100, 6))
-        ctk.CTkButton(row_actions, text=T('cf_clear'), width=70, height=34, corner_radius=6,
-                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+        ctk.CTkButton(row_actions, text=T('cf_clear'), width=70, height=34, corner_radius=8,
+                      fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._on_cf_clear).pack(side='left')
 
@@ -885,8 +933,8 @@ class ModernApp(ctk.CTk):
         self._refresh_cf_status()
 
         # ── About Card ──────────────────────────────────────────────
-        about = ctk.CTkFrame(content, fg_color=BG_SECTION, corner_radius=12,
-                              border_width=1, border_color=BORDER)
+        about = ctk.CTkFrame(content, fg_color=BG_CARD, corner_radius=12,
+                              border_width=1, border_color=BORDER_CARD)
         about.pack(fill='x', pady=(0, 16))
 
         about_hdr = ctk.CTkFrame(about, fg_color='transparent')
@@ -910,7 +958,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.3.4',
+        ctk.CTkLabel(ver_badge, text='v2.4.0',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -1049,7 +1097,7 @@ class ModernApp(ctk.CTk):
         for i, v in enumerate(self._videos):
             if i % 4 == 0:
                 row_frame = ctk.CTkFrame(self._grid_scroll, fg_color='transparent')
-                row_frame.pack(fill='x', padx=10, pady=4)
+                row_frame.pack(fill='x', padx=12, pady=6)
 
             url = v.get('url', '')
             title = v.get('title', '')
@@ -1057,10 +1105,11 @@ class ModernApp(ctk.CTk):
             thumb_url = v.get('thumbnail', '')
             is_sel = url in self._selected_urls
 
-            card = ctk.CTkFrame(row_frame, fg_color=BG_CARD, corner_radius=10,
-                                border_width=2,
+            card = ctk.CTkFrame(row_frame, fg_color=ACCENT_DIM if is_sel else BG_CARD,
+                                corner_radius=12,
+                                border_width=2 if is_sel else 1,
                                 border_color=ACCENT if is_sel else BORDER)
-            card.pack(side='left', padx=5, pady=5, fill='x', expand=True)
+            card.pack(side='left', padx=6, pady=6, fill='x', expand=True)
 
             # Thumbnail placeholder (16:9)
             thumb_holder = ctk.CTkFrame(card, fg_color=BG_SIDEBAR,
@@ -1076,7 +1125,7 @@ class ModernApp(ctk.CTk):
             # Duration badge
             if dur:
                 dur_lbl = ctk.CTkLabel(thumb_holder, text=f' {dur} ',
-                                        text_color='#ffffff',
+                                        text_color='#FFFFFF',
                                         fg_color='#000000',
                                         corner_radius=4,
                                         font=('Consolas', 9, 'bold'))
@@ -1096,9 +1145,12 @@ class ModernApp(ctk.CTk):
             sel_text = ('✓ ' + T('selected')) if is_sel else T('select')
             sel_btn = ctk.CTkButton(
                 bottom, text=sel_text, width=64, height=26,
-                corner_radius=6,
-                fg_color=ACCENT if is_sel else BG_INPUT,
-                hover_color=ACCENT_HOVER,
+                corner_radius=8,
+                fg_color=ACCENT if is_sel else 'transparent',
+                border_width=0 if is_sel else 1,
+                border_color=BORDER_HOVER,
+                hover_color=ACCENT_HOVER if is_sel else BG_CARD_HOVER,
+                text_color=('#FFFFFF', '#FFFFFF') if is_sel else TEXT_PRI,
                 font=('Microsoft JhengHei', 9),
                 command=lambda u=url: self._toggle_select(u)
             )
@@ -1160,10 +1212,16 @@ class ModernApp(ctk.CTk):
         if w:
             is_sel = url in self._selected_urls
             try:
-                w['card'].configure(border_color=ACCENT if is_sel else BORDER)
+                w['card'].configure(
+                    fg_color=ACCENT_DIM if is_sel else BG_CARD,
+                    border_width=2 if is_sel else 1,
+                    border_color=ACCENT if is_sel else BORDER)
                 w['sel_btn'].configure(
                     text=('✓ ' + T('selected')) if is_sel else T('select'),
-                    fg_color=ACCENT if is_sel else BG_INPUT)
+                    fg_color=ACCENT if is_sel else 'transparent',
+                    border_width=0 if is_sel else 1,
+                    hover_color=ACCENT_HOVER if is_sel else BG_CARD_HOVER,
+                    text_color=('#FFFFFF', '#FFFFFF') if is_sel else TEXT_PRI)
             except Exception:
                 pass
         n = len(self._selected_urls)
@@ -1264,8 +1322,8 @@ class ModernApp(ctk.CTk):
 
         ctk.CTkLabel(self._sidebar, text='標籤選片',
                      text_color=ACCENT,
-                     font=('Microsoft JhengHei', 12, 'bold')).pack(
-            anchor='w', padx=10, pady=(10, 6))
+                     font=('Microsoft JhengHei', 13, 'bold')).pack(
+            anchor='w', padx=12, pady=(12, 8))
 
         # Subtle divider
         ctk.CTkFrame(self._sidebar, height=1,
@@ -1286,24 +1344,24 @@ class ModernApp(ctk.CTk):
             hdr = ctk.CTkButton(
                 self._sidebar,
                 text=f'{arrow} {group_name} ({len(tag_list)})',
-                fg_color='transparent', hover_color='#141430',
+                fg_color='transparent', hover_color=BG_CARD_HOVER,
                 text_color=TEXT_SEC, anchor='w',
                 font=('Microsoft JhengHei', 10, 'bold'),
-                height=30, corner_radius=4,
+                height=30, corner_radius=8,
                 command=lambda g=group_name: self._toggle_group(g))
-            hdr.pack(fill='x', padx=4, pady=1)
+            hdr.pack(fill='x', padx=6, pady=1)
 
             if expanded:
                 for name, slug in tag_list:
                     tag_url = JableTVBrowser.tag_url(slug)
                     btn = ctk.CTkButton(
                         self._sidebar, text=name,
-                        fg_color='transparent', hover_color='#1a1a34',
+                        fg_color='transparent', hover_color=BG_CARD_HOVER,
                         text_color=TEXT_SEC, anchor='w',
                         font=('Microsoft JhengHei', 10),
-                        height=26, corner_radius=4,
+                        height=26, corner_radius=8,
                         command=lambda u=tag_url, n=name: self._on_tag_click(u, n))
-                    btn.pack(fill='x', padx=(16, 4), pady=0)
+                    btn.pack(fill='x', padx=(18, 6), pady=0)
 
     def _toggle_group(self, group: str):
         self._sidebar_expanded[group] = not self._sidebar_expanded.get(group, False)
@@ -1517,7 +1575,7 @@ class ModernApp(ctk.CTk):
 
     # ── Download list refresh (incremental — no destroy/rebuild storm) ──
     _STATE_COLORS = {
-        '下載中': ACCENT, '準備中': ACCENT2, '等待中': WARNING,
+        '下載中': ACCENT, '準備中': WARNING, '等待中': WARNING,
         '已下載': SUCCESS, '未完成': WARNING, '已取消': TEXT_DIM,
         '網址錯誤': ERROR_C, '封鎖/解析失敗': ERROR_C,
     }
@@ -1586,16 +1644,16 @@ class ModernApp(ctk.CTk):
         """Build one download row once; return widget handles for in-place updates."""
         color = self._STATE_COLORS.get(item.state, TEXT_SEC)
 
-        row = ctk.CTkFrame(self._dl_scroll, fg_color=BG_CARD, corner_radius=6,
-                           border_width=1, border_color=BORDER_CARD,
-                           height=48)
-        row.pack(fill='x', padx=6, pady=3)
+        row = ctk.CTkFrame(self._dl_scroll, fg_color=BG_CARD, corner_radius=10,
+                           border_width=1, border_color=BORDER,
+                           height=58)
+        row.pack(fill='x', padx=12, pady=6)
         row.pack_propagate(False)
 
         state_lbl = ctk.CTkLabel(row, text=item.state or '—', text_color=color,
                                  font=('Microsoft JhengHei', 10, 'bold'),
                                  width=68)
-        state_lbl.pack(side='left', padx=(12, 4))
+        state_lbl.pack(side='left', padx=(14, 6))
 
         name_lbl = ctk.CTkLabel(row, text=item.name or item.url,
                                 text_color=TEXT_PRI,
@@ -1606,8 +1664,8 @@ class ModernApp(ctk.CTk):
         # Progress widgets (created once, packed/unpacked dynamically)
         pb = ctk.CTkProgressBar(row, width=130, height=10,
                                 corner_radius=5,
-                                fg_color='#1a1a2e',
-                                progress_color=ACCENT)
+                                fg_color=BG_INPUT,
+                                progress_color=SUCCESS)
         pb.set(max(0.0, min(1.0, item.progress / 100)))
         pct_lbl = ctk.CTkLabel(row, text='', text_color=TEXT_SEC,
                                font=('Consolas', 9), width=40)
@@ -1617,11 +1675,12 @@ class ModernApp(ctk.CTk):
         # Remove button
         remove_btn = ctk.CTkButton(
             row, text='✕', width=30, height=30,
-            corner_radius=6,
-            fg_color='transparent', hover_color=ERROR_DIM,
+            corner_radius=8,
+            fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
+            hover_color=BG_CARD_HOVER,
             text_color=TEXT_DIM, font=('Consolas', 12),
             command=lambda u=item.url: self._dlmgr.remove_item(u))
-        remove_btn.pack(side='right', padx=6)
+        remove_btn.pack(side='right', padx=(6, 12))
 
         widgets = {
             'row': row, 'state_lbl': state_lbl, 'name_lbl': name_lbl,

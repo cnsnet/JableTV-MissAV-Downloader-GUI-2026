@@ -34,16 +34,28 @@ Most Jable TV download tools are CLI-only — you need Python, pip, and a termin
 
 ---
 
-## Screenshots (Native Material Design UI)
+## Screenshots (v2.4 redesign · Day / Night themes)
 
-### JableTV Browse
+> Brand-new "Studio Noir" design with a built-in **one-click day / night theme toggle** (defaults to following your Windows system theme).
+
+### JableTV Browse (dark)
 <p align="center">
-  <img src="./img/screenshot_browse_jable.png" width="800" alt="Jable TV download GUI — browse and select videos from JableTV" />
+  <img src="./img/screenshot_browse_jable.png" width="800" alt="Jable TV download GUI — browse and select videos from JableTV dark theme" />
 </p>
 
-### MissAV Browse
+### MissAV Browse (dark)
 <p align="center">
-  <img src="./img/screenshot_browse_missav.png" width="800" alt="MissAV download GUI — browse and select videos from MissAV" />
+  <img src="./img/screenshot_browse_missav.png" width="800" alt="MissAV download GUI — browse and select videos from MissAV dark theme" />
+</p>
+
+### SupJav Browse (dark)
+<p align="center">
+  <img src="./img/screenshot_browse_supjav.png" width="800" alt="SupJav download GUI — browse and select videos from SupJav" />
+</p>
+
+### ☀️ Light theme (one-click toggle)
+<p align="center">
+  <img src="./img/screenshot_theme_light.png" width="800" alt="JableTV MissAV SupJav Downloader light theme" />
 </p>
 
 ### Download Manager (Live Progress Bars)
@@ -51,9 +63,9 @@ Most Jable TV download tools are CLI-only — you need Python, pip, and a termin
   <img src="./img/screenshot_download.png" width="800" alt="Jable TV MissAV batch download manager with live progress bars" />
 </p>
 
-### Settings
+### Settings (theme toggle + Cloudflare bypass)
 <p align="center">
-  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader settings — speed limit, concurrent downloads, and resolution selection" />
+  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader settings — theme toggle and Cloudflare bypass" />
 </p>
 
 ---

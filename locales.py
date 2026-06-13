@@ -7,7 +7,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.4',
+        'version_label': 'v2.4.0',
         'by_author': 'by ALOS',
         'cf_card_title': '🛡️ Cloudflare 阻擋突破（進階）',
         'cf_card_desc': '匯入瀏覽器通過 Cloudflare 後取得的 cf_clearance，僅套用到選取網域。',
@@ -132,7 +132,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.4',
+        'version_label': 'v2.4.0',
         'by_author': 'by ALOS',
         'cf_card_title': '🛡️ Cloudflare Bypass (Advanced)',
         'cf_card_desc': 'Import a cf_clearance value from a browser session that passed Cloudflare. Applies only to the selected host.',

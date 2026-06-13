@@ -34,16 +34,28 @@
 
 ---
 
-## 螢幕截圖（Material Design 原生介面）
+## 螢幕截圖（v2.4 全新介面 · 日 / 夜雙主題）
 
-### JableTV 瀏覽頁面
+> 全新「Studio Noir」設計，內建 **日 / 夜雙主題一鍵切換**（預設跟隨 Windows 系統）。
+
+### JableTV 瀏覽頁面（夜間）
 <p align="center">
-  <img src="./img/screenshot_browse_jable.png" width="800" alt="Jable TV 下載器 GUI 瀏覽頁面 — JableTV Downloader browse interface" />
+  <img src="./img/screenshot_browse_jable.png" width="800" alt="Jable TV 下載器 GUI 瀏覽頁面 — JableTV Downloader browse interface dark theme" />
 </p>
 
-### MissAV 瀏覽頁面
+### MissAV 瀏覽頁面（夜間）
 <p align="center">
-  <img src="./img/screenshot_browse_missav.png" width="800" alt="MissAV 下載器 GUI 瀏覽頁面 — MissAV Downloader browse interface" />
+  <img src="./img/screenshot_browse_missav.png" width="800" alt="MissAV 下載器 GUI 瀏覽頁面 — MissAV Downloader browse interface dark theme" />
+</p>
+
+### SupJav 瀏覽頁面（夜間）
+<p align="center">
+  <img src="./img/screenshot_browse_supjav.png" width="800" alt="SupJav 下載器 GUI 瀏覽頁面 — SupJav Downloader browse interface" />
+</p>
+
+### ☀️ 日間主題（一鍵切換）
+<p align="center">
+  <img src="./img/screenshot_theme_light.png" width="800" alt="JableTV MissAV SupJav Downloader 日間淺色主題 — light theme" />
 </p>
 
 ### 下載管理（即時進度條）
@@ -51,9 +63,9 @@
   <img src="./img/screenshot_download.png" width="800" alt="Jable MissAV 批量下載管理 — batch download manager with progress bars" />
 </p>
 
-### 設定頁面
+### 設定頁面（主題切換 + Cloudflare 突破）
 <p align="center">
-  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader 設定頁面 — settings page with resolution selection" />
+  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader 設定頁面 — settings page with theme toggle and Cloudflare bypass" />
 </p>
 
 ---
