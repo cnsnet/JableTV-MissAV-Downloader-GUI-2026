@@ -18,6 +18,7 @@ import customtkinter as ctk
 import requests
 from PIL import Image
 
+import config
 import M3U8Sites
 from M3U8Sites.SiteJableTV import JableTVBrowser
 from M3U8Sites.SiteMissAV import MissAVBrowser
@@ -345,6 +346,7 @@ class ModernApp(ctk.CTk):
         super().__init__()
 
         set_lang(lang)
+        config.load_cf_overrides()
         ctk.set_appearance_mode('dark')
         ctk.set_default_color_theme('dark-blue')
 
@@ -418,7 +420,7 @@ class ModernApp(ctk.CTk):
                      text_color=ACCENT).pack(side='left', padx=(8, 0))
 
         # Right info
-        ctk.CTkLabel(header, text='v2.3.3  |  by ALOS',
+        ctk.CTkLabel(header, text='v2.3.4  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right', padx=20)
 
@@ -803,6 +805,85 @@ class ModernApp(ctk.CTk):
                      text_color=TEXT_DIM,
                      font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 20))
 
+        # Cloudflare bypass
+        cf = ctk.CTkFrame(content, fg_color=BG_SECTION, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        cf.pack(fill='x', pady=(0, 16))
+
+        cf_hdr = ctk.CTkFrame(cf, fg_color='transparent')
+        cf_hdr.pack(fill='x', padx=20, pady=(16, 4))
+        ctk.CTkLabel(cf_hdr, text=T('cf_card_title'),
+                     font=('Microsoft JhengHei', 14, 'bold'),
+                     text_color=TEXT_PRI).pack(side='left')
+        ctk.CTkLabel(cf, text=T('cf_card_desc'),
+                     text_color=TEXT_DIM,
+                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=20, pady=(0, 12))
+
+        ctk.CTkFrame(cf, height=1, fg_color=BORDER).pack(fill='x', padx=20)
+
+        hosts = sorted({h for mirrors in config.MIRRORS.values() for h in mirrors})
+        default_host = hosts[0] if hosts else ''
+        self._cf_host_var = ctk.StringVar(value=default_host)
+        self._cf_cookie_var = ctk.StringVar()
+        self._cf_ua_var = ctk.StringVar()
+
+        row_host = ctk.CTkFrame(cf, fg_color='transparent')
+        row_host.pack(fill='x', padx=20, pady=(16, 2))
+        ctk.CTkLabel(row_host, text=T('cf_host_label'), text_color=TEXT_PRI,
+                     font=('Microsoft JhengHei', 11), width=90,
+                     anchor='w').pack(side='left')
+        ctk.CTkOptionMenu(row_host, values=hosts,
+                          variable=self._cf_host_var,
+                          command=self._on_cf_host_change, width=220, height=34,
+                          corner_radius=6,
+                          fg_color=BG_INPUT, button_color=ACCENT,
+                          button_hover_color=ACCENT_HOVER).pack(side='left', padx=10)
+
+        row_cookie = ctk.CTkFrame(cf, fg_color='transparent')
+        row_cookie.pack(fill='x', padx=20, pady=(8, 2))
+        ctk.CTkLabel(row_cookie, text=T('cf_cookie_label'), text_color=TEXT_PRI,
+                     font=('Microsoft JhengHei', 11), width=90,
+                     anchor='w').pack(side='left')
+        ctk.CTkEntry(row_cookie, textvariable=self._cf_cookie_var,
+                     height=34, corner_radius=6,
+                     fg_color=BG_INPUT, border_color=BORDER, border_width=1,
+                     text_color=TEXT_PRI).pack(side='left', fill='x',
+                                               expand=True, padx=10)
+
+        row_ua = ctk.CTkFrame(cf, fg_color='transparent')
+        row_ua.pack(fill='x', padx=20, pady=(8, 2))
+        ctk.CTkLabel(row_ua, text=T('cf_ua_label'), text_color=TEXT_PRI,
+                     font=('Microsoft JhengHei', 11), width=90,
+                     anchor='w').pack(side='left')
+        ctk.CTkEntry(row_ua, textvariable=self._cf_ua_var,
+                     height=34, corner_radius=6,
+                     fg_color=BG_INPUT, border_color=BORDER, border_width=1,
+                     text_color=TEXT_PRI).pack(side='left', fill='x',
+                                               expand=True, padx=10)
+
+        row_actions = ctk.CTkFrame(cf, fg_color='transparent')
+        row_actions.pack(fill='x', padx=20, pady=(10, 2))
+        ctk.CTkButton(row_actions, text=T('cf_save'), width=70, height=34, corner_radius=6,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self._on_cf_save).pack(side='left', padx=(100, 6))
+        ctk.CTkButton(row_actions, text=T('cf_clear'), width=70, height=34, corner_radius=6,
+                      fg_color=BG_CARD, border_width=1, border_color=BORDER,
+                      hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
+                      command=self._on_cf_clear).pack(side='left')
+
+        self._cf_status_lbl = ctk.CTkLabel(cf, text='', text_color=TEXT_SEC,
+                                           font=('Microsoft JhengHei', 10))
+        self._cf_status_lbl.pack(anchor='w', padx=(120, 20), pady=(6, 4))
+
+        ctk.CTkLabel(cf, text=T('cf_help'),
+                     text_color=TEXT_DIM,
+                     font=('Microsoft JhengHei', 9),
+                     wraplength=720,
+                     justify='left').pack(anchor='w', padx=20, pady=(4, 18))
+
+        self._on_cf_host_change(default_host)
+        self._refresh_cf_status()
+
         # ── About Card ──────────────────────────────────────────────
         about = ctk.CTkFrame(content, fg_color=BG_SECTION, corner_radius=12,
                               border_width=1, border_color=BORDER)
@@ -829,7 +910,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.3.3',
+        ctk.CTkLabel(ver_badge, text='v2.3.4',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -1369,6 +1450,32 @@ class ModernApp(ctk.CTk):
 
     def _clear_queue(self):
         self._dlmgr.clear_all()
+
+    def _on_cf_host_change(self, host):
+        ov = config.get_cf_override(host) or {}
+        self._cf_cookie_var.set(ov.get('cookie', ''))
+        self._cf_ua_var.set(ov.get('ua', ''))
+
+    def _on_cf_save(self):
+        host = self._cf_host_var.get()
+        config.set_cf_override(host, self._cf_cookie_var.get(), self._cf_ua_var.get())
+        self._refresh_cf_status()
+        current = self._cf_status_lbl.cget('text')
+        self._cf_status_lbl.configure(text=f"{T('cf_saved')} | {current}")
+
+    def _on_cf_clear(self):
+        host = self._cf_host_var.get()
+        config.clear_cf_override(host)
+        self._cf_cookie_var.set('')
+        self._cf_ua_var.set('')
+        self._refresh_cf_status()
+
+    def _refresh_cf_status(self):
+        hosts = config.cf_override_hosts()
+        if hosts:
+            self._cf_status_lbl.configure(text=T('cf_status', hosts=', '.join(hosts)))
+        else:
+            self._cf_status_lbl.configure(text=T('cf_status_none'))
 
     def _on_speed_change(self, val):
         from M3U8Sites.M3U8Crawler import speed_limiter

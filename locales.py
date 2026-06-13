@@ -7,8 +7,25 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.3',
+        'version_label': 'v2.3.4',
         'by_author': 'by ALOS',
+        'cf_card_title': '🛡️ Cloudflare 阻擋突破（進階）',
+        'cf_card_desc': '匯入瀏覽器通過 Cloudflare 後取得的 cf_clearance，僅套用到選取網域。',
+        'cf_host_label': '網站網域',
+        'cf_cookie_label': 'cf_clearance Cookie',
+        'cf_ua_label': 'User-Agent',
+        'cf_save': '儲存',
+        'cf_clear': '清除',
+        'cf_saved': '已儲存',
+        'cf_status': '已設定: {hosts}',
+        'cf_status_none': '尚未設定任何網站',
+        'cf_help': (
+            '步驟：用 Chrome 開啟該網站 → 通過 Cloudflare 驗證 → F12 → Application/應用程式 → Cookies → '
+            '複製 cf_clearance 的值貼到上面；User-Agent 在 Console 輸入 navigator.userAgent 複製。\n\n'
+            '注意：cf_clearance 綁定你的「IP + User-Agent」——App 必須與瀏覽器走相同網路/VPN、相同 UA；'
+            '它會過期（約 30 分鐘～數小時），失效就重新複製；僅對該網域有效；'
+            '這是進階盡力而為的方法，不保證成功。嫌麻煩可改用 Cloudflare WARP（免費、乾淨 IP）。資料僅存在你本機。'
+        ),
 
         # Tabs
         'tab_browse': '瀏覽',
@@ -37,7 +54,7 @@ STRINGS = {
         'fetch_error': '載入失敗，請稍後再試',
         'category_load_failed': '分類載入失敗，請重試；可能被 Cloudflare 阻擋',
         'mirrors_blocked': '所有鏡像都被 Cloudflare 阻擋，請改用 VPN 或不同網路',
-        'blocked_vpn_hint': '所有鏡像都被 Cloudflare 阻擋，請改用 VPN 或不同網路',
+        'blocked_vpn_hint': '所有鏡像都被 Cloudflare 阻擋，請改用 VPN 或不同網路，或到設定匯入 cf_clearance Cookie。',
         'parse_failed_short': '封鎖或解析失敗，請重試',
         'open_folder_failed_title': '無法開啟資料夾',
 
@@ -115,8 +132,26 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.3.3',
+        'version_label': 'v2.3.4',
         'by_author': 'by ALOS',
+        'cf_card_title': '🛡️ Cloudflare Bypass (Advanced)',
+        'cf_card_desc': 'Import a cf_clearance value from a browser session that passed Cloudflare. Applies only to the selected host.',
+        'cf_host_label': 'Host',
+        'cf_cookie_label': 'cf_clearance Cookie',
+        'cf_ua_label': 'User-Agent',
+        'cf_save': 'Save',
+        'cf_clear': 'Clear',
+        'cf_saved': 'Saved',
+        'cf_status': 'Set for: {hosts}',
+        'cf_status_none': 'None set',
+        'cf_help': (
+            'Steps: open the site in Chrome → pass Cloudflare verification → F12 → Application → Cookies → '
+            'copy the cf_clearance value above; for User-Agent, run navigator.userAgent in the Console and copy it.\n\n'
+            'Caveats: cf_clearance is bound to your IP + User-Agent, so the app must use the same network/VPN and UA as the browser. '
+            'It expires (about 30 minutes to a few hours), so copy it again when it stops working. It only works for that domain. '
+            'This is an advanced best-effort method and is not guaranteed. For less hassle, use Cloudflare WARP (free, clean IP). '
+            'Data is stored only on your computer.'
+        ),
 
         # Tabs
         'tab_browse': 'Browse',
@@ -145,7 +180,7 @@ STRINGS = {
         'crawl_added': 'Added {n} videos to download queue',
         'category_load_failed': 'Failed to load categories. Try again; Cloudflare may be blocking the request.',
         'mirrors_blocked': 'All mirrors were blocked by Cloudflare. Use a VPN or a different network.',
-        'blocked_vpn_hint': 'All mirrors were blocked by Cloudflare. Use a VPN or a different network.',
+        'blocked_vpn_hint': 'All mirrors were blocked by Cloudflare. Use a VPN/different network, or import a cf_clearance cookie in Settings.',
         'parse_failed_short': 'Blocked or parse failed; please retry.',
         'open_folder_failed_title': 'Cannot Open Folder',
 

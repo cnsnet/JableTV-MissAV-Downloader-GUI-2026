@@ -69,14 +69,32 @@ def fetch_with_mirrors(scraper, url, site_key, validate, timeout=15, headers_fac
     saw_real = False
     for host in order:
         target = _swap_host(url, host)
-        hdrs = headers_factory(host) if headers_factory else None
+        base_hdrs = dict(headers_factory(host) or {}) if headers_factory else {}
+        ov = config.get_cf_override(host)
+        trials = []
+        if ov:
+            h2 = dict(base_hdrs)
+            if ov.get('ua'):
+                h2['User-Agent'] = ov['ua']
+            ck = {'cf_clearance': ov['cookie']} if ov.get('cookie') else None
+            trials.append((h2, ck))
+        trials.append((base_hdrs, None))
         resp = None
-        for attempt in range(2):                      # 1 retry on transport error only
-            try:
-                resp = scraper.get(target, timeout=timeout, headers=hdrs or {})
-                break
-            except Exception:
-                resp = None
+        for hdrs, cookies in trials:
+            r = None
+            for attempt in range(2):                  # 1 retry on transport error only
+                try:
+                    r = scraper.get(target, timeout=timeout, headers=hdrs or {}, cookies=cookies)
+                    break
+                except Exception:
+                    r = None
+            if r is None:
+                continue
+            if _is_cf_interstitial(r):
+                resp = r
+                continue
+            resp = r
+            break
         if resp is None:
             continue
         if _is_cf_interstitial(resp):
