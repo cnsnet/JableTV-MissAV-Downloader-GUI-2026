@@ -25,7 +25,7 @@ from M3U8Sites.SiteMissAV import MissAVBrowser
 from M3U8Sites.SiteSupJav import SupJavBrowser
 from M3U8Sites.M3U8Crawler import MirrorsBlockedError
 from config import headers
-from locales import T, set_lang, get_lang
+from locales import T, set_lang, get_lang, ui_font, LANGUAGES, state_label
 
 # ── Design tokens ────────────────────────────────────────────────────
 ACCENT        = ('#DC3D43', '#E5484D')
@@ -56,6 +56,7 @@ BORDER_CARD   = ('#E6E3DE', '#242329')
 DEFAULT_CONCURRENT = 2
 MAX_CONCURRENT = 10
 CSV_PATH = os.path.join(os.getcwd(), 'JableTV.csv')
+ERR_BLOCKED = '__cf_blocked__'
 
 SITES = {
     'JableTV': {'browser': JableTVBrowser},
@@ -163,10 +164,10 @@ class DownloadManager:
             self._prep_sem.acquire()
             try:
                 job = M3U8Sites.CreateSite(url, dest)
-            except MirrorsBlockedError as exc:
+            except MirrorsBlockedError:
                 with self._lock:
                     self._active.pop(url, None)
-                self._set_state(url, '封鎖/解析失敗', error=T('blocked_vpn_hint'))
+                self._set_state(url, '封鎖/解析失敗', error=ERR_BLOCKED)
                 self._try_next()
                 return
             finally:
@@ -180,7 +181,7 @@ class DownloadManager:
             if not job.is_url_vaildate():
                 err = getattr(job, '_last_error', None)
                 if isinstance(err, MirrorsBlockedError):
-                    error = T('blocked_vpn_hint')
+                    error = ERR_BLOCKED
                 else:
                     error = str(err) if err else T('parse_failed_short')
                 with self._lock:
@@ -337,14 +338,24 @@ def _fetch_thumbnail(url: str) -> Optional[Image.Image]:
 
 # ── Main App ─────────────────────────────────────────────────────────
 class ModernApp(ctk.CTk):
-    def __init__(self, url: str = '', dest: str = 'download', lang: str = 'zh'):
+    def __init__(self, url: str = '', dest: str = 'download', lang: str = 'en'):
         super().__init__()
 
-        set_lang(lang)
         config.load_cf_overrides()
+        self._lang_code_by_name = {name: code for code, name in LANGUAGES}
+        self._lang_name_by_code = {code: name for code, name in LANGUAGES}
         self._theme_mode = config.get_theme()
         ctk.set_appearance_mode(self._theme_mode)
         ctk.set_default_color_theme('blue')
+
+        self.withdraw()
+        stored = config.get_ui_lang()
+        if stored is None:
+            chosen = self._ask_language_first_run()
+            set_lang(chosen)
+            config.set_ui_lang(chosen)
+        else:
+            set_lang(stored)
 
         self.title('JableTV · MissAV · SupJav Downloader — by ALOS')
         self.geometry('1280x800')
@@ -354,6 +365,7 @@ class ModernApp(ctk.CTk):
         self._dest = dest
         self._url_input = url
         self._is_closing = False
+        self._rebuilding = False
 
         # Browse state
         self._site_key = 'JableTV'
@@ -366,6 +378,8 @@ class ModernApp(ctk.CTk):
         self._sidebar_expanded: dict[str, bool] = {}
         self._grid_gen: int = 0  # bumps on each page refresh so stale thumbs are dropped
         self._page_req: int = 0
+        self._build_gen: int = 0
+        self._active_tab_idx: int = 0
         self._last_loaded_page: int = 1
         self._browse_blocked = False
         self._browse_empty_message = ''
@@ -373,12 +387,14 @@ class ModernApp(ctk.CTk):
         self._dl_rows: dict = {}   # url -> {row, state_lbl, name_lbl, pb, pct, spd, remove}
         self._dl_empty_lbl = None
         self._thumb_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        self._speed_mbps = 0.0
 
         # Download manager
         self._dlmgr = DownloadManager(max_concurrent=DEFAULT_CONCURRENT)
         self._dlmgr.load_csv(CSV_PATH)
 
         self._build_ui()
+        self.deiconify()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
 
         # Start periodic refresh for downloads
@@ -390,11 +406,75 @@ class ModernApp(ctk.CTk):
         # Load initial categories in background
         self._load_categories()
 
-    def _ui(self, fn):
+    def _ask_language_first_run(self):
+        result = {'code': 'en'}
+        popup = ctk.CTkToplevel(self)
+        popup.title(T('lang_picker_title'))
+        popup.resizable(False, False)
+        popup.transient(self)
+
+        picker_font = 'Microsoft JhengHei'
+        ctk.CTkLabel(
+            popup, text=T('lang_picker_title'),
+            font=(picker_font, 18, 'bold'),
+            text_color=TEXT_PRI).pack(padx=28, pady=(24, 14))
+
+        def _choose(code='en'):
+            result['code'] = code
+            try:
+                popup.grab_release()
+            except tk.TclError:
+                pass
+            popup.destroy()
+
+        for code, name in LANGUAGES:
+            ctk.CTkButton(
+                popup, text=name, width=260, height=42,
+                font=(picker_font, 15),
+                fg_color=BG_CARD, border_width=1, border_color=BORDER_HOVER,
+                hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
+                command=lambda c=code: _choose(c)).pack(padx=28, pady=5)
+
+        popup.protocol('WM_DELETE_WINDOW', lambda: _choose('en'))
+        popup.update_idletasks()
+        width = max(popup.winfo_width(), 320)
+        height = max(popup.winfo_height(), 280)
+        x = max((self.winfo_screenwidth() - width) // 2, 0)
+        y = max((self.winfo_screenheight() - height) // 2, 0)
+        popup.geometry(f'{width}x{height}+{x}+{y}')
+        popup.grab_set()
+        popup.lift()
+        try:
+            popup.attributes('-topmost', True)
+            def _drop_topmost():
+                try:
+                    popup.attributes('-topmost', False)
+                except tk.TclError:
+                    pass
+            popup.after(150, _drop_topmost)
+        except tk.TclError:
+            pass
+        self.wait_window(popup)
+        return result.get('code') or 'en'
+
+    def _ui(self, fn, gen: int | None = None):
         if self._is_closing:
             return
+        if gen is not None and gen != self._build_gen:
+            return
+
+        def _run():
+            if self._is_closing:
+                return
+            if gen is not None and gen != self._build_gen:
+                return
+            try:
+                fn()
+            except tk.TclError:
+                pass
+
         try:
-            self.after(0, fn)
+            self.after(0, _run)
         except tk.TclError:
             pass
 
@@ -413,6 +493,129 @@ class ModernApp(ctk.CTk):
         config.set_theme(self._theme_mode)
         self._theme_btn.configure(text=self._theme_glyph())
 
+    def _tab_names(self):
+        return [T('tab_browse'), T('tab_download'), T('tab_settings')]
+
+    def _current_tab_index(self):
+        try:
+            current = self._tabs.get()
+            self._active_tab_idx = self._tab_names().index(current)
+        except (AttributeError, ValueError, tk.TclError):
+            pass
+        return self._active_tab_idx
+
+    def _set_tab_index(self, idx: int):
+        names = self._tab_names()
+        idx = max(0, min(idx, len(names) - 1))
+        try:
+            self._tabs.set(names[idx])
+            self._active_tab_idx = idx
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _speed_values(self):
+        return [T('unlimited'), '1 MB/s', '2 MB/s', '5 MB/s',
+                '10 MB/s', '15 MB/s']
+
+    def _speed_label(self):
+        return T('unlimited') if self._speed_mbps == 0 else f'{int(self._speed_mbps)} MB/s'
+
+    def _resolution_values(self):
+        return [T('resolution_highest'), T('resolution_lowest')]
+
+    def _resolution_label(self):
+        from M3U8Sites.M3U8Crawler import get_prefer_lowest_res
+        return T('resolution_lowest') if get_prefer_lowest_res() else T('resolution_highest')
+
+    def _on_lang_change(self, display_name):
+        code = self._lang_code_by_name.get(display_name)
+        if not code or code == get_lang():
+            return
+        self._apply_language(code)
+
+    def _var_get(self, name, default=''):
+        var = getattr(self, name, None)
+        if var is None:
+            return default
+        try:
+            return var.get()
+        except (AttributeError, tk.TclError):
+            return default
+
+    def _apply_language(self, code):
+        self._rebuilding = True
+        from M3U8Sites.M3U8Crawler import get_prefer_lowest_res, set_prefer_lowest_res
+
+        try:
+            snapshot = {
+                'tab_idx': self._current_tab_index(),
+                'dest': self._var_get('_dest_var', self._dest),
+                'dl_url': self._var_get('_dl_url_var', self._url_input),
+                'cf_host': self._var_get('_cf_host_var'),
+                'cf_cookie': self._var_get('_cf_cookie_var'),
+                'cf_ua': self._var_get('_cf_ua_var'),
+                'page_jump': self._var_get('_page_jump_var'),
+                'concurrency': self._dlmgr.max_concurrent,
+                'speed_mbps': self._speed_mbps,
+                'prefer_lowest_res': get_prefer_lowest_res(),
+                'site_key': self._site_key,
+            }
+
+            set_lang(code)
+            config.set_ui_lang(code)
+            self._build_gen += 1
+            self._page_req += 1
+            self._grid_gen += 1
+
+            for child in self.winfo_children():
+                try:
+                    child.destroy()
+                except tk.TclError:
+                    pass
+
+            self._card_widgets = {}
+            self._dl_rows = {}
+            self._categories = []
+            self._dl_empty_lbl = None
+            self._videos = []
+            self._browse_blocked = False
+            self._browse_empty_message = ''
+            self._cf_status_lbl = None
+            self._site_menu = None
+            self._cat_menu = None
+            self._grid_scroll = None
+            self._dl_scroll = None
+            self._sidebar = None
+            self._status_lbl = None
+
+            self._dest = snapshot['dest']
+            self._url_input = snapshot['dl_url']
+            self._site_key = snapshot['site_key']
+            self._speed_mbps = snapshot['speed_mbps']
+            set_prefer_lowest_res(snapshot['prefer_lowest_res'])
+
+            self._build_ui()
+
+            self._site_key = snapshot['site_key']
+            self._site_var.set(snapshot['site_key'])
+            self._dest_var.set(snapshot['dest'])
+            self._dl_url_var.set(snapshot['dl_url'])
+            self._page_jump_var.set(snapshot['page_jump'])
+            self._conc_var.set(str(snapshot['concurrency']))
+            self._speed_var.set(self._speed_label())
+            self._res_var.set(self._resolution_label())
+            if snapshot['cf_host']:
+                self._cf_host_var.set(snapshot['cf_host'])
+            self._cf_cookie_var.set(snapshot['cf_cookie'])
+            self._cf_ua_var.set(snapshot['cf_ua'])
+            self._refresh_cf_status()
+            self._set_tab_index(snapshot['tab_idx'])
+            self._rebuild_sidebar()
+            self._load_categories()
+        finally:
+            self._rebuilding = False
+        self._refresh_downloads(schedule=False)
+
     def _build_ui(self):
         # ── Header bar ──────────────────────────────────────────────
         header = ctk.CTkFrame(self, height=56, fg_color=BG_HEADER, corner_radius=0)
@@ -423,25 +626,38 @@ class ModernApp(ctk.CTk):
         brand = ctk.CTkFrame(header, fg_color='transparent')
         brand.pack(side='left', padx=20, fill='y')
         ctk.CTkLabel(brand, text='JableTV · MissAV · SupJav',
-                     font=('Georgia', 18, 'bold'),
+                     font=(ui_font(), 18, 'bold'),
                      text_color=TEXT_PRI).pack(side='left', pady=0)
         ctk.CTkLabel(brand, text='Downloader',
-                     font=('Georgia', 18),
+                     font=(ui_font(), 18),
                      text_color=ACCENT).pack(side='left', padx=(8, 0))
 
         # Right info
         right_info = ctk.CTkFrame(header, fg_color='transparent')
         right_info.pack(side='right', padx=20, fill='y')
-        ctk.CTkLabel(right_info, text='v2.4.0  |  by ALOS',
+        ctk.CTkLabel(right_info, text='v2.5.0  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right')
         self._theme_btn = ctk.CTkButton(
             right_info, text=self._theme_glyph(), width=34, height=34,
             corner_radius=8, fg_color=BG_CARD, border_width=1,
             border_color=BORDER, hover_color=BG_CARD_HOVER,
-            text_color=TEXT_SEC, font=('Microsoft JhengHei', 14),
+            text_color=TEXT_SEC, font=(ui_font(), 14),
             command=self._cycle_theme)
         self._theme_btn.pack(side='right', padx=(0, 10), pady=11)
+        self._lang_var = ctk.StringVar(value=self._lang_name_by_code.get(get_lang(), 'English'))
+        self._lang_menu = ctk.CTkOptionMenu(
+            right_info, values=[name for _, name in LANGUAGES],
+            variable=self._lang_var, command=self._on_lang_change,
+            width=120, height=34, corner_radius=8,
+            fg_color=BG_INPUT, button_color=BORDER_HOVER,
+            button_hover_color=ACCENT, text_color=TEXT_PRI,
+            dropdown_fg_color=BG_CARD, dropdown_hover_color=BG_CARD_HOVER,
+            dropdown_text_color=TEXT_PRI,
+            font=(ui_font(), 10), dropdown_font=(ui_font(), 10))
+        self._lang_menu.pack(side='right', padx=(0, 8), pady=11)
+        ctk.CTkLabel(right_info, text=T('lang_label'), text_color=TEXT_DIM,
+                     font=(ui_font(), 9)).pack(side='right', padx=(0, 6))
 
         # Header separator
         ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).pack(fill='x')
@@ -469,7 +685,7 @@ class ModernApp(ctk.CTk):
         status_bar = ctk.CTkFrame(self, height=30, fg_color=BG_HEADER, corner_radius=0)
         status_bar.pack(fill='x')
         status_bar.pack_propagate(False)
-        self._status_lbl = ctk.CTkLabel(status_bar, text='Ready',
+        self._status_lbl = ctk.CTkLabel(status_bar, text=T('status_ready'),
                                          font=('Consolas', 10),
                                          text_color=TEXT_SEC)
         self._status_lbl.pack(side='left', padx=16)
@@ -487,9 +703,9 @@ class ModernApp(ctk.CTk):
         left = ctk.CTkFrame(top, fg_color='transparent')
         left.pack(side='left', fill='y', padx=(16, 0))
 
-        self._site_var = ctk.StringVar(value='JableTV')
-        ctk.CTkLabel(left, text='Site', text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(side='left', padx=(0, 6))
+        self._site_var = ctk.StringVar(value=self._site_key)
+        ctk.CTkLabel(left, text=T('site_label'), text_color=TEXT_DIM,
+                     font=(ui_font(), 9)).pack(side='left', padx=(0, 6))
         self._site_menu = ctk.CTkOptionMenu(
             left, values=list(SITES.keys()), variable=self._site_var,
             command=self._on_site_change, width=110,
@@ -504,7 +720,7 @@ class ModernApp(ctk.CTk):
             side='left', fill='y', pady=14, padx=6)
 
         ctk.CTkLabel(left, text=T('category_label'), text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(side='left', padx=(6, 6))
+                     font=(ui_font(), 9)).pack(side='left', padx=(6, 6))
         self._cat_var = ctk.StringVar(value=T('loading_browse'))
         self._cat_menu = ctk.CTkOptionMenu(
             left, values=[T('loading_browse')], variable=self._cat_var,
@@ -539,7 +755,7 @@ class ModernApp(ctk.CTk):
         right.pack(side='right', fill='y', padx=(0, 16))
 
         self._sel_lbl = ctk.CTkLabel(right, text='', text_color=ACCENT,
-                                      font=('Microsoft JhengHei', 11, 'bold'))
+                                      font=(ui_font(), 11, 'bold'))
         self._sel_lbl.pack(side='right', padx=8)
         ctk.CTkButton(right, text=T('select_all_btn'), command=self._select_all_on_page,
                       width=80, height=32, corner_radius=8,
@@ -598,7 +814,7 @@ class ModernApp(ctk.CTk):
                       command=lambda: self._goto_page(self._page - 1)
                       ).pack(side='left', padx=3)
         self._page_lbl = ctk.CTkLabel(nav_inner, text=T('page_n', n=1), text_color=TEXT_PRI,
-                                       font=('Microsoft JhengHei', 12, 'bold'),
+                                       font=(ui_font(), 12, 'bold'),
                                        width=80)
         self._page_lbl.pack(side='left', padx=10)
         ctk.CTkButton(nav_inner, text=T('next_page'), width=74, height=30,
@@ -621,7 +837,7 @@ class ModernApp(ctk.CTk):
                                    justify='center')
         page_entry.pack(side='left', padx=3)
         page_entry.bind('<Return>', lambda e: self._jump_to_page())
-        ctk.CTkButton(nav_inner, text='Go', width=40, height=30,
+        ctk.CTkButton(nav_inner, text=T('go_btn'), width=40, height=30,
                       corner_radius=8,
                       fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
@@ -641,7 +857,7 @@ class ModernApp(ctk.CTk):
         row1 = ctk.CTkFrame(input_frame, fg_color='transparent')
         row1.pack(fill='x', padx=16, pady=(12, 4))
         ctk.CTkLabel(row1, text=T('save_location'), text_color=TEXT_DIM, width=70,
-                     font=('Microsoft JhengHei', 10), anchor='e').pack(side='left')
+                     font=(ui_font(), 10), anchor='e').pack(side='left')
         self._dest_var = ctk.StringVar(value=self._dest)
         ctk.CTkEntry(row1, textvariable=self._dest_var,
                      height=34, corner_radius=8,
@@ -652,7 +868,7 @@ class ModernApp(ctk.CTk):
                       fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._pick_dest).pack(side='left')
-        ctk.CTkButton(row1, text='Open', width=50, height=34, corner_radius=8,
+        ctk.CTkButton(row1, text=T('open_btn'), width=50, height=34, corner_radius=8,
                       fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
                       command=self._open_dest_folder).pack(side='left', padx=(6, 0))
@@ -661,7 +877,7 @@ class ModernApp(ctk.CTk):
         row2 = ctk.CTkFrame(input_frame, fg_color='transparent')
         row2.pack(fill='x', padx=16, pady=(0, 12))
         ctk.CTkLabel(row2, text=T('url_label'), text_color=TEXT_DIM, width=70,
-                     font=('Microsoft JhengHei', 10), anchor='e').pack(side='left')
+                     font=(ui_font(), 10), anchor='e').pack(side='left')
         self._dl_url_var = ctk.StringVar(value=self._url_input)
         ctk.CTkEntry(row2, textvariable=self._dl_url_var,
                      height=34, corner_radius=8,
@@ -681,7 +897,7 @@ class ModernApp(ctk.CTk):
         ctk.CTkButton(bar, text=T('download_btn'), width=95, height=34, corner_radius=8,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       text_color=('#FFFFFF', '#FFFFFF'),
-                      font=('Microsoft JhengHei', 11, 'bold'),
+                      font=(ui_font(), 11, 'bold'),
                       command=self._download_url).pack(side='left', padx=(12, 4), pady=8)
         ctk.CTkButton(bar, text=T('download_all_btn'), width=120, height=34, corner_radius=8,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
@@ -708,10 +924,9 @@ class ModernApp(ctk.CTk):
 
         # Speed control
         ctk.CTkLabel(bar, text=T('speed_limit'), text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(side='right', padx=(0, 6))
-        self._speed_var = ctk.StringVar(value=T('unlimited'))
-        ctk.CTkOptionMenu(bar, values=[T('unlimited'), '1 MB/s', '2 MB/s', '5 MB/s',
-                                        '10 MB/s', '15 MB/s'],
+                     font=(ui_font(), 9)).pack(side='right', padx=(0, 6))
+        self._speed_var = ctk.StringVar(value=self._speed_label())
+        ctk.CTkOptionMenu(bar, values=self._speed_values(),
                           variable=self._speed_var,
                           command=self._on_speed_change, width=100, height=34,
                           corner_radius=8,
@@ -749,10 +964,10 @@ class ModernApp(ctk.CTk):
         title_row = ctk.CTkFrame(content, fg_color='transparent')
         title_row.pack(fill='x', pady=(0, 20))
         ctk.CTkLabel(title_row, text=T('settings_title'),
-                     font=('Microsoft JhengHei', 20, 'bold'),
+                     font=(ui_font(), 20, 'bold'),
                      text_color=TEXT_PRI).pack(side='left')
         ctk.CTkLabel(title_row, text=T('settings_desc'),
-                     font=('Microsoft JhengHei', 10),
+                     font=(ui_font(), 10),
                      text_color=TEXT_DIM).pack(side='left', padx=(16, 0))
 
         # ── Download Settings Card ──────────────────────────────────
@@ -764,7 +979,7 @@ class ModernApp(ctk.CTk):
         grp_hdr = ctk.CTkFrame(grp, fg_color='transparent')
         grp_hdr.pack(fill='x', padx=20, pady=(16, 12))
         ctk.CTkLabel(grp_hdr, text=T('download_settings'),
-                     font=('Microsoft JhengHei', 14, 'bold'),
+                     font=(ui_font(), 14, 'bold'),
                      text_color=TEXT_PRI).pack(side='left')
 
         ctk.CTkFrame(grp, height=1, fg_color=BORDER).pack(fill='x', padx=20)
@@ -773,7 +988,7 @@ class ModernApp(ctk.CTk):
         row_dest = ctk.CTkFrame(grp, fg_color='transparent')
         row_dest.pack(fill='x', padx=20, pady=(16, 2))
         ctk.CTkLabel(row_dest, text=T('save_location_setting'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_dest, textvariable=self._dest_var,
                      height=34, corner_radius=8,
@@ -786,16 +1001,15 @@ class ModernApp(ctk.CTk):
                       command=self._pick_dest).pack(side='left')
         ctk.CTkLabel(grp, text=T('save_location_desc'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
+                     font=(ui_font(), 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
 
         # Speed limit
         row_speed = ctk.CTkFrame(grp, fg_color='transparent')
         row_speed.pack(fill='x', padx=20, pady=(8, 2))
         ctk.CTkLabel(row_speed, text=T('speed_limit_setting'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
-        ctk.CTkOptionMenu(row_speed, values=[T('unlimited'), '1 MB/s', '2 MB/s',
-                                              '5 MB/s', '10 MB/s', '15 MB/s'],
+        ctk.CTkOptionMenu(row_speed, values=self._speed_values(),
                           variable=self._speed_var,
                           command=self._on_speed_change, width=130, height=34,
                           corner_radius=8,
@@ -805,15 +1019,15 @@ class ModernApp(ctk.CTk):
                           dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(grp, text=T('speed_limit_desc'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
+                     font=(ui_font(), 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
 
         # Concurrent downloads
         row_conc = ctk.CTkFrame(grp, fg_color='transparent')
         row_conc.pack(fill='x', padx=20, pady=(8, 2))
         ctk.CTkLabel(row_conc, text=T('concurrent_setting'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
-        self._conc_var = ctk.StringVar(value=str(DEFAULT_CONCURRENT))
+        self._conc_var = ctk.StringVar(value=str(self._dlmgr.max_concurrent))
         ctk.CTkOptionMenu(row_conc,
                           values=[str(i) for i in range(1, MAX_CONCURRENT + 1)],
                           variable=self._conc_var,
@@ -825,20 +1039,20 @@ class ModernApp(ctk.CTk):
                           dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(row_conc, text=T('max_n', n=MAX_CONCURRENT),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 10)).pack(side='left')
+                     font=(ui_font(), 10)).pack(side='left')
         ctk.CTkLabel(grp, text=T('concurrent_desc'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
+                     font=(ui_font(), 9)).pack(anchor='w', padx=(110, 0), pady=(0, 8))
 
         # Resolution preference
         row_res = ctk.CTkFrame(grp, fg_color='transparent')
         row_res.pack(fill='x', padx=20, pady=(8, 2))
         ctk.CTkLabel(row_res, text=T('resolution_setting'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
-        self._res_var = ctk.StringVar(value=T('resolution_highest'))
+        self._res_var = ctk.StringVar(value=self._resolution_label())
         ctk.CTkOptionMenu(row_res,
-                          values=[T('resolution_highest'), T('resolution_lowest')],
+                          values=self._resolution_values(),
                           variable=self._res_var,
                           command=self._on_res_change, width=180, height=34,
                           corner_radius=8,
@@ -848,7 +1062,7 @@ class ModernApp(ctk.CTk):
                           dropdown_text_color=TEXT_PRI).pack(side='left', padx=10)
         ctk.CTkLabel(grp, text=T('resolution_desc'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=(110, 0), pady=(0, 20))
+                     font=(ui_font(), 9)).pack(anchor='w', padx=(110, 0), pady=(0, 20))
 
         # Cloudflare bypass
         cf = ctk.CTkFrame(content, fg_color=BG_CARD, corner_radius=12,
@@ -858,11 +1072,11 @@ class ModernApp(ctk.CTk):
         cf_hdr = ctk.CTkFrame(cf, fg_color='transparent')
         cf_hdr.pack(fill='x', padx=20, pady=(16, 4))
         ctk.CTkLabel(cf_hdr, text=T('cf_card_title'),
-                     font=('Microsoft JhengHei', 14, 'bold'),
+                     font=(ui_font(), 14, 'bold'),
                      text_color=TEXT_PRI).pack(side='left')
         ctk.CTkLabel(cf, text=T('cf_card_desc'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9)).pack(anchor='w', padx=20, pady=(0, 12))
+                     font=(ui_font(), 9)).pack(anchor='w', padx=20, pady=(0, 12))
 
         ctk.CTkFrame(cf, height=1, fg_color=BORDER).pack(fill='x', padx=20)
 
@@ -875,7 +1089,7 @@ class ModernApp(ctk.CTk):
         row_host = ctk.CTkFrame(cf, fg_color='transparent')
         row_host.pack(fill='x', padx=20, pady=(16, 2))
         ctk.CTkLabel(row_host, text=T('cf_host_label'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkOptionMenu(row_host, values=hosts,
                           variable=self._cf_host_var,
@@ -889,7 +1103,7 @@ class ModernApp(ctk.CTk):
         row_cookie = ctk.CTkFrame(cf, fg_color='transparent')
         row_cookie.pack(fill='x', padx=20, pady=(8, 2))
         ctk.CTkLabel(row_cookie, text=T('cf_cookie_label'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_cookie, textvariable=self._cf_cookie_var,
                      height=34, corner_radius=8,
@@ -900,7 +1114,7 @@ class ModernApp(ctk.CTk):
         row_ua = ctk.CTkFrame(cf, fg_color='transparent')
         row_ua.pack(fill='x', padx=20, pady=(8, 2))
         ctk.CTkLabel(row_ua, text=T('cf_ua_label'), text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 11), width=90,
+                     font=(ui_font(), 11), width=90,
                      anchor='w').pack(side='left')
         ctk.CTkEntry(row_ua, textvariable=self._cf_ua_var,
                      height=34, corner_radius=8,
@@ -920,12 +1134,12 @@ class ModernApp(ctk.CTk):
                       command=self._on_cf_clear).pack(side='left')
 
         self._cf_status_lbl = ctk.CTkLabel(cf, text='', text_color=TEXT_SEC,
-                                           font=('Microsoft JhengHei', 10))
+                                           font=(ui_font(), 10))
         self._cf_status_lbl.pack(anchor='w', padx=(120, 20), pady=(6, 4))
 
         ctk.CTkLabel(cf, text=T('cf_help'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 9),
+                     font=(ui_font(), 9),
                      wraplength=720,
                      justify='left').pack(anchor='w', padx=20, pady=(4, 18))
 
@@ -940,7 +1154,7 @@ class ModernApp(ctk.CTk):
         about_hdr = ctk.CTkFrame(about, fg_color='transparent')
         about_hdr.pack(fill='x', padx=20, pady=(16, 12))
         ctk.CTkLabel(about_hdr, text=T('about'),
-                     font=('Microsoft JhengHei', 14, 'bold'),
+                     font=(ui_font(), 14, 'bold'),
                      text_color=TEXT_PRI).pack(side='left')
 
         ctk.CTkFrame(about, height=1, fg_color=BORDER).pack(fill='x', padx=20)
@@ -950,21 +1164,21 @@ class ModernApp(ctk.CTk):
 
         ctk.CTkLabel(about_body, text='JableTV · MissAV · SupJav Downloader',
                      text_color=TEXT_PRI,
-                     font=('Microsoft JhengHei', 15, 'bold')).pack(anchor='w')
+                     font=(ui_font(), 15, 'bold')).pack(anchor='w')
         ctk.CTkLabel(about_body, text='by ALOS (Alos21750)',
                      text_color=ACCENT,
-                     font=('Microsoft JhengHei', 12)).pack(anchor='w', pady=(6, 0))
+                     font=(ui_font(), 12)).pack(anchor='w', pady=(6, 0))
 
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.4.0',
+        ctk.CTkLabel(ver_badge, text='v2.5.0',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
         ctk.CTkLabel(about_body, text=T('disclaimer'),
                      text_color=TEXT_DIM,
-                     font=('Microsoft JhengHei', 10)).pack(anchor='w', pady=(10, 0))
+                     font=(ui_font(), 10)).pack(anchor='w', pady=(10, 0))
 
     # ── Browse logic ─────────────────────────────────────────────────
     def _load_categories(self):
@@ -972,14 +1186,19 @@ class ModernApp(ctk.CTk):
             return
         self._page_req += 1
         my_req = self._page_req
+        my_gen = self._build_gen
         site_key = self._site_key
         browser = SITES[site_key]['browser']
+        missav_lang = T('missav_lang')
+        supjav_lang = T('supjav_lang')
 
         def _fetch():
             failed = False
             try:
                 if site_key == 'MissAV':
-                    cats = browser.fetch_categories(lang=T('missav_lang'))
+                    cats = browser.fetch_categories(lang=missav_lang)
+                elif site_key == 'SupJav':
+                    cats = browser.fetch_categories(lang=supjav_lang)
                 else:
                     cats = browser.fetch_categories()
             except Exception:
@@ -990,7 +1209,7 @@ class ModernApp(ctk.CTk):
                         for name, url in browser.HOMEPAGE_SECTIONS]
 
             def _apply():
-                if self._is_closing or my_req != self._page_req:
+                if self._is_closing or my_req != self._page_req or my_gen != self._build_gen:
                     return
                 self._categories = cats
                 if cats and not failed:
@@ -1017,7 +1236,7 @@ class ModernApp(ctk.CTk):
                 self._status_lbl.configure(text=T('category_load_failed'))
                 self._refresh_grid()
 
-            self._ui(_apply)
+            self._ui(_apply, gen=my_gen)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -1031,6 +1250,7 @@ class ModernApp(ctk.CTk):
             return
         self._page_req += 1
         my_req = self._page_req
+        my_gen = self._build_gen
         site_key = self._site_key
         browser = SITES[site_key]['browser']
         base = self._current_base_url
@@ -1053,12 +1273,17 @@ class ModernApp(ctk.CTk):
             except MirrorsBlockedError:
                 blocked = True
                 videos = []
-            self._ui(lambda: self._apply_page(my_req, videos, page_snapshot, blocked))
+            self._ui(
+                lambda: self._apply_page(my_req, videos, page_snapshot, blocked, my_gen),
+                gen=my_gen)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _apply_page(self, req: int, videos: list[dict], page_snapshot: int, blocked: bool = False):
+    def _apply_page(self, req: int, videos: list[dict], page_snapshot: int,
+                    blocked: bool = False, gen: int | None = None):
         if self._is_closing or req != self._page_req:
+            return
+        if gen is not None and gen != self._build_gen:
             return
         if not videos and page_snapshot > 1 and not blocked:
             self._page = self._last_loaded_page
@@ -1076,11 +1301,15 @@ class ModernApp(ctk.CTk):
         self._page_lbl.configure(text=T('page_n', n=self._page))
 
     def _refresh_grid(self):
-        for w in self._grid_scroll.winfo_children():
-            w.destroy()
+        try:
+            for w in self._grid_scroll.winfo_children():
+                w.destroy()
+        except (AttributeError, tk.TclError):
+            return
         self._card_widgets = {}
         self._grid_gen += 1
         gen = self._grid_gen
+        build_gen = self._build_gen
 
         if not self._videos:
             if self._browse_blocked:
@@ -1089,7 +1318,7 @@ class ModernApp(ctk.CTk):
                 msg = self._browse_empty_message or T('no_results')
             ctk.CTkLabel(self._grid_scroll, text=msg,
                          text_color=TEXT_DIM,
-                         font=('Microsoft JhengHei', 14)).pack(pady=40)
+                         font=(ui_font(), 14)).pack(pady=40)
             return
 
         # Create grid of cards, 4 per row
@@ -1119,7 +1348,7 @@ class ModernApp(ctk.CTk):
             thumb_lbl = ctk.CTkLabel(thumb_holder, text=T('loading_browse'),
                                       text_color=TEXT_DIM,
                                       fg_color='transparent',
-                                      font=('Microsoft JhengHei', 10))
+                                      font=(ui_font(), 10))
             thumb_lbl.pack(expand=True)
 
             # Duration badge
@@ -1134,7 +1363,7 @@ class ModernApp(ctk.CTk):
             # Title
             title_text = title[:55] + '...' if len(title) > 55 else title
             ctk.CTkLabel(card, text=title_text, text_color=TEXT_PRI,
-                         font=('Microsoft JhengHei', 10),
+                         font=(ui_font(), 10),
                          wraplength=230, justify='left').pack(
                 padx=10, pady=(8, 2), anchor='w')
 
@@ -1151,7 +1380,7 @@ class ModernApp(ctk.CTk):
                 border_color=BORDER_HOVER,
                 hover_color=ACCENT_HOVER if is_sel else BG_CARD_HOVER,
                 text_color=('#FFFFFF', '#FFFFFF') if is_sel else TEXT_PRI,
-                font=('Microsoft JhengHei', 9),
+                font=(ui_font(), 9),
                 command=lambda u=url: self._toggle_select(u)
             )
             sel_btn.pack(side='right')
@@ -1168,23 +1397,24 @@ class ModernApp(ctk.CTk):
 
             # Background thumbnail load
             if thumb_url:
-                self._load_thumb_async(thumb_url, thumb_lbl, gen)
+                self._load_thumb_async(thumb_url, thumb_lbl, gen, build_gen)
             else:
-                thumb_lbl.configure(text='(無縮圖)')
+                thumb_lbl.configure(text=T('no_thumbnail'))
 
-    def _load_thumb_async(self, thumb_url: str, label: ctk.CTkLabel, gen: int):
+    def _load_thumb_async(self, thumb_url: str, label: ctk.CTkLabel,
+                          gen: int, build_gen: int):
         """Fetch thumbnail in a background thread; marshal result back to the
         main thread via .after() so Tk widget updates stay thread-safe.
         The gen counter prevents stale thumbs from polluting a newer page."""
         def _worker():
-            if self._is_closing or gen != self._grid_gen:
+            if self._is_closing or gen != self._grid_gen or build_gen != self._build_gen:
                 return
             img = _fetch_thumbnail(thumb_url)
             if img is None:
                 return
             # Only apply if this label is still part of the current page.
             def _apply():
-                if self._is_closing or gen != self._grid_gen:
+                if self._is_closing or gen != self._grid_gen or build_gen != self._build_gen:
                     return
                 try:
                     if not label.winfo_exists():
@@ -1196,7 +1426,7 @@ class ModernApp(ctk.CTk):
                     label._ctk_img_ref = ctk_img
                 except Exception:
                     pass
-            self._ui(_apply)
+            self._ui(_apply, gen=build_gen)
         try:
             self._thumb_executor.submit(_worker)
         except RuntimeError:
@@ -1284,13 +1514,14 @@ class ModernApp(ctk.CTk):
             return
         from urllib.parse import quote
         if self._site_key == 'JableTV':
+            # JableTV does not expose language-specific listing/search variants.
             self._current_base_url = f'https://jable.tv/search/?q={quote(q, safe="")}'
         elif self._site_key == 'SupJav':
-            self._current_base_url = SupJavBrowser.search_url(q)
+            self._current_base_url = SupJavBrowser.search_url(q, lang=T('supjav_lang'))
         else:
             lang = T('missav_lang')
             eq = quote(q, safe='')
-            if lang and lang != 'cn':
+            if lang:
                 self._current_base_url = f'https://missav.ai/{lang}/search/{eq}'
             else:
                 self._current_base_url = f'https://missav.ai/search/{eq}'
@@ -1320,9 +1551,9 @@ class ModernApp(ctk.CTk):
         for w in self._sidebar.winfo_children():
             w.destroy()
 
-        ctk.CTkLabel(self._sidebar, text='標籤選片',
+        ctk.CTkLabel(self._sidebar, text=T('sidebar_title'),
                      text_color=ACCENT,
-                     font=('Microsoft JhengHei', 13, 'bold')).pack(
+                     font=(ui_font(), 13, 'bold')).pack(
             anchor='w', padx=12, pady=(12, 8))
 
         # Subtle divider
@@ -1330,9 +1561,9 @@ class ModernApp(ctk.CTk):
                      fg_color=BORDER).pack(fill='x', padx=8, pady=(0, 6))
 
         if self._site_key != 'JableTV':
-            ctk.CTkLabel(self._sidebar, text='僅 JableTV\n支援標籤',
+            ctk.CTkLabel(self._sidebar, text=T('tags_jable_only'),
                          text_color=TEXT_DIM,
-                         font=('Microsoft JhengHei', 10)).pack(pady=20)
+                         font=(ui_font(), 10)).pack(pady=20)
             return
 
         tags = JableTVBrowser.SIDEBAR_TAGS
@@ -1346,7 +1577,7 @@ class ModernApp(ctk.CTk):
                 text=f'{arrow} {group_name} ({len(tag_list)})',
                 fg_color='transparent', hover_color=BG_CARD_HOVER,
                 text_color=TEXT_SEC, anchor='w',
-                font=('Microsoft JhengHei', 10, 'bold'),
+                font=(ui_font(), 10, 'bold'),
                 height=30, corner_radius=8,
                 command=lambda g=group_name: self._toggle_group(g))
             hdr.pack(fill='x', padx=6, pady=1)
@@ -1358,7 +1589,7 @@ class ModernApp(ctk.CTk):
                         self._sidebar, text=name,
                         fg_color='transparent', hover_color=BG_CARD_HOVER,
                         text_color=TEXT_SEC, anchor='w',
-                        font=('Microsoft JhengHei', 10),
+                        font=(ui_font(), 10),
                         height=26, corner_radius=8,
                         command=lambda u=tag_url, n=name: self._on_tag_click(u, n))
                     btn.pack(fill='x', padx=(18, 6), pady=0)
@@ -1420,6 +1651,7 @@ class ModernApp(ctk.CTk):
     def _crawl_listing(self, url: str):
         """Crawl a listing URL across all pages; add every video to the queue."""
         dest = self._dest_var.get() or 'download'
+        gen = self._build_gen
         seen: set[str] = set()
         is_jable = bool(re.match(r'https://(?:www\.)?(?:jable\.tv|fs1\.app)/', url))
         is_supjav = bool(re.match(r'https://(?:www\.)?supjav\.com/', url))
@@ -1445,7 +1677,8 @@ class ModernApp(ctk.CTk):
                     videos = MissAVBrowser.fetch_page(page_url)
             except MirrorsBlockedError as e:
                 print(f'[crawl] page {page} blocked: {e}')
-                self._ui(lambda: self._status_lbl.configure(text=T('mirrors_blocked')))
+                self._ui(lambda: self._status_lbl.configure(text=T('mirrors_blocked')),
+                         gen=gen)
                 return
             except Exception as e:
                 print(f'[crawl] page {page} error: {e}')
@@ -1470,11 +1703,11 @@ class ModernApp(ctk.CTk):
                 break  # No new videos on this page, stop
 
             self._ui(lambda n=len(seen): self._status_lbl.configure(
-                text=T('crawling_url') + f' ({n})'))
+                text=T('crawling_url') + f' ({n})'), gen=gen)
 
         n = len(seen)
         self._ui(lambda: self._status_lbl.configure(
-            text=T('crawl_added', n=n)))
+            text=T('crawl_added', n=n)), gen=gen)
 
     def _download_all(self):
         # If the URL field has a listing URL, crawl it first
@@ -1537,11 +1770,17 @@ class ModernApp(ctk.CTk):
 
     def _on_speed_change(self, val):
         from M3U8Sites.M3U8Crawler import speed_limiter
-        if val in ('無限制', 'Unlimited'):
+        val = str(val)
+        if val == T('unlimited') or not val[:1].isdigit():
+            self._speed_mbps = 0
             speed_limiter.set_limit(0)
-        else:
+            return
+        try:
             mbps = float(val.split()[0])
-            speed_limiter.set_limit(mbps)
+        except (ValueError, IndexError):
+            return
+        self._speed_mbps = mbps
+        speed_limiter.set_limit(mbps)
 
     def _on_res_change(self, val):
         from M3U8Sites.M3U8Crawler import set_prefer_lowest_res
@@ -1580,8 +1819,16 @@ class ModernApp(ctk.CTk):
         '網址錯誤': ERROR_C, '封鎖/解析失敗': ERROR_C,
     }
 
-    def _refresh_downloads(self):
+    def _refresh_downloads(self, schedule: bool = True):
         if self._is_closing:
+            return
+        if (self._rebuilding or getattr(self, '_status_lbl', None) is None
+                or getattr(self, '_dl_scroll', None) is None):
+            if schedule:
+                try:
+                    self.after(1000, self._refresh_downloads)
+                except tk.TclError:
+                    pass
             return
         try:
             items = self._dlmgr.get_items()
@@ -1600,9 +1847,9 @@ class ModernApp(ctk.CTk):
             if not items:
                 if self._dl_empty_lbl is None:
                     self._dl_empty_lbl = ctk.CTkLabel(
-                        self._dl_scroll, text='下載清單是空的',
+                        self._dl_scroll, text=T('dl_list_empty'),
                         text_color=TEXT_DIM,
-                        font=('Microsoft JhengHei', 13))
+                        font=(ui_font(), 13))
                     self._dl_empty_lbl.pack(pady=40)
             else:
                 if self._dl_empty_lbl is not None:
@@ -1624,17 +1871,17 @@ class ModernApp(ctk.CTk):
             p = self._dlmgr.pending_count
             parts = []
             if a:
-                parts.append(f'下載中 {a}/{self._dlmgr.max_concurrent}')
+                parts.append(f'{state_label("下載中")} {a}/{self._dlmgr.max_concurrent}')
             if p:
-                parts.append(f'等待中 {p}')
+                parts.append(f'{state_label("等待中")} {p}')
             done = sum(1 for i in items if i.state == '已下載')
             if done:
-                parts.append(f'已完成 {done}')
-            self._status_lbl.configure(text='  |  '.join(parts) if parts else '就緒')
-        except tk.TclError:
+                parts.append(f'{state_label("已下載")} {done}')
+            self._status_lbl.configure(text='  |  '.join(parts) if parts else T('status_ready'))
+        except (tk.TclError, AttributeError):
             pass
         finally:
-            if not self._is_closing:
+            if schedule and not self._is_closing:
                 try:
                     self.after(1000, self._refresh_downloads)
                 except tk.TclError:
@@ -1650,14 +1897,15 @@ class ModernApp(ctk.CTk):
         row.pack(fill='x', padx=12, pady=6)
         row.pack_propagate(False)
 
-        state_lbl = ctk.CTkLabel(row, text=item.state or '—', text_color=color,
-                                 font=('Microsoft JhengHei', 10, 'bold'),
+        state_lbl = ctk.CTkLabel(row, text=state_label(item.state) if item.state else '—',
+                                 text_color=color,
+                                 font=(ui_font(), 10, 'bold'),
                                  width=68)
         state_lbl.pack(side='left', padx=(14, 6))
 
         name_lbl = ctk.CTkLabel(row, text=item.name or item.url,
                                 text_color=TEXT_PRI,
-                                font=('Microsoft JhengHei', 10),
+                                font=(ui_font(), 10),
                                 anchor='w')
         name_lbl.pack(side='left', fill='x', expand=True, padx=6)
 
@@ -1698,7 +1946,9 @@ class ModernApp(ctk.CTk):
         if w['last_state'] != item.state:
             color = self._STATE_COLORS.get(item.state, TEXT_SEC)
             try:
-                w['state_lbl'].configure(text=item.state or '—', text_color=color)
+                w['state_lbl'].configure(
+                    text=state_label(item.state) if item.state else '—',
+                    text_color=color)
             except Exception:
                 return
             w['last_state'] = item.state
@@ -1706,7 +1956,8 @@ class ModernApp(ctk.CTk):
         # Name (may arrive after creation once metadata is scraped)
         display_name = item.name or item.url
         if item.error and item.state in ('未完成', '封鎖/解析失敗'):
-            err = item.error.replace('\n', ' ').strip()
+            err_text = T('blocked_vpn_hint') if item.error == ERR_BLOCKED else item.error
+            err = err_text.replace('\n', ' ').strip()
             if len(err) > 80:
                 err = err[:77] + '...'
             display_name = f'{display_name} - {err}'
@@ -1763,6 +2014,12 @@ class ModernApp(ctk.CTk):
     def _clipboard_poll(self):
         if self._is_closing:
             return
+        if self._rebuilding:
+            try:
+                self.after(800, self._clipboard_poll)
+            except tk.TclError:
+                pass
+            return
         try:
             clp = self.clipboard_get()
             if clp != self._clp_text:
@@ -1776,7 +2033,12 @@ class ModernApp(ctk.CTk):
                             print(f'[剪貼簿] {url}')
         except (tk.TclError, Exception):
             pass
-        self.after(800, self._clipboard_poll)
+        finally:
+            if not self._is_closing:
+                try:
+                    self.after(800, self._clipboard_poll)
+                except tk.TclError:
+                    pass
 
     # ── Close ────────────────────────────────────────────────────────
     def _on_close(self):
@@ -1790,6 +2052,6 @@ class ModernApp(ctk.CTk):
         self.destroy()
 
 
-def gui_modern_main(url: str = '', dest: str = 'download', lang: str = 'zh'):
+def gui_modern_main(url: str = '', dest: str = 'download', lang: str = 'en'):
     app = ModernApp(url=url, dest=dest, lang=lang)
     app.mainloop()

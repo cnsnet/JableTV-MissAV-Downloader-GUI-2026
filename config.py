@@ -15,6 +15,7 @@ MIRRORS = {
 }
 
 _cf_lock = threading.Lock()
+_prefs_lock = threading.Lock()
 CF_OVERRIDES = {}
 
 
@@ -27,16 +28,33 @@ def _ui_prefs_path():
     return os.path.join(os.path.dirname(_cf_store_path()), 'ui_prefs.json')
 
 
-def get_theme():
+def _load_prefs():
     try:
         with open(_ui_prefs_path(), 'r', encoding='utf-8') as f:
             raw = json.load(f)
     except Exception:
-        return 'system'
+        return {}
     if isinstance(raw, dict):
-        mode = raw.get('theme')
-    else:
-        mode = raw
+        return dict(raw)
+    if isinstance(raw, str):
+        return {'theme': raw}
+    return {}
+
+
+def _save_prefs(prefs):
+    path = _ui_prefs_path()
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(prefs, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def get_theme():
+    mode = _load_prefs().get('theme')
     if isinstance(mode, str):
         mode = mode.strip().lower()
         if mode in {'system', 'light', 'dark'}:
@@ -49,24 +67,32 @@ def set_theme(mode):
     if mode not in {'system', 'light', 'dark'}:
         mode = 'system'
     try:
-        path = _ui_prefs_path()
-        folder = os.path.dirname(path)
-        os.makedirs(folder, exist_ok=True)
-        prefs = {}
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                prefs = raw
-        except Exception:
-            pass
-        prefs['theme'] = mode
-        tmp = path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(prefs, f, ensure_ascii=False, indent=2, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+        with _prefs_lock:
+            prefs = _load_prefs()
+            prefs['theme'] = mode
+            _save_prefs(prefs)
+    except Exception:
+        pass
+
+
+def get_ui_lang():
+    code = _load_prefs().get('lang')
+    if isinstance(code, str):
+        code = code.strip()
+        if code in {'en', 'zh', 'zh-Hans', 'ja'}:
+            return code
+    return None
+
+
+def set_ui_lang(code):
+    code = (code or '').strip()
+    if code not in {'en', 'zh', 'zh-Hans', 'ja'}:
+        code = 'en'
+    try:
+        with _prefs_lock:
+            prefs = _load_prefs()
+            prefs['lang'] = code
+            _save_prefs(prefs)
     except Exception:
         pass
 

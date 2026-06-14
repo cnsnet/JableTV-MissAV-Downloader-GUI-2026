@@ -114,8 +114,8 @@ class MissAVBrowser:
     """Fetches categories and video listings from missav.ai for the browse GUI."""
     _scraper = None
 
-    # Fixed category list — no language segment needed for default (Chinese).
-    # For non-default languages (e.g. 'en'), fetch_categories() inserts the prefix.
+    # Fixed category list: no language segment means MissAV default Traditional Chinese.
+    # Non-empty language codes (e.g. 'cn', 'en', 'ja') are inserted as prefixes.
     CATEGORIES = [
         ('今日熱門', 'https://missav.ai/dm296/today-hot'),
         ('本週熱門', 'https://missav.ai/dm170/weekly-hot'),
@@ -141,15 +141,15 @@ class MissAVBrowser:
         return cls._scraper
 
     @classmethod
-    def fetch_categories(cls, lang='cn'):
-        """Return categories with URLs localized to *lang* (cn, en, ja, …).
+    def fetch_categories(cls, lang=''):
+        """Return categories with URLs localized to *lang*.
 
-        MissAV defaults to Chinese, so 'cn' needs no language prefix.
+        MissAV defaults to Traditional Chinese, so an empty string means no prefix.
         Other languages get /{lang}/ inserted after the /dm{N}/ segment.
         """
         cats = []
         for name, url in cls.CATEGORIES:
-            if lang and lang != 'cn':
+            if lang:
                 # Insert language prefix: .../dm296/en/today-hot
                 url = re.sub(r'(/dm\d+/)', rf'\1{lang}/', url)
             cats.append({'name': name, 'url': url, 'count': 0})
@@ -194,11 +194,11 @@ class MissAVBrowser:
             return []
 
     @classmethod
-    def search(cls, query, lang='cn'):
+    def search(cls, query, lang=''):
         """Search for videos matching query."""
         from urllib.parse import quote
         q = quote(query, safe='')
-        if lang and lang != 'cn':
+        if lang:
             url = f'https://missav.ai/{lang}/search/{q}'
         else:
             url = f'https://missav.ai/search/{q}'

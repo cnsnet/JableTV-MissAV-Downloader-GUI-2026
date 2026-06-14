@@ -153,8 +153,22 @@ class SupJavBrowser:
         return _browser_scraper
 
     @classmethod
-    def fetch_categories(cls):
-        return [{'name': n, 'url': u, 'count': 0} for n, u in cls.CATEGORIES]
+    def _with_lang(cls, url, lang=''):
+        lang = (lang or '').strip().strip('/')
+        if not lang:
+            return url
+        root = cls._url_root
+        prefix = root + '/'
+        if url == root or url == prefix:
+            return f'{prefix}{lang}/'
+        if url.startswith(prefix):
+            return f'{prefix}{lang}/{url[len(prefix):]}'
+        return url
+
+    @classmethod
+    def fetch_categories(cls, lang=''):
+        return [{'name': n, 'url': cls._with_lang(u, lang), 'count': 0}
+                for n, u in cls.CATEGORIES]
 
     @classmethod
     def fetch_page(cls, url):
@@ -184,9 +198,9 @@ class SupJavBrowser:
         return f"{base.rstrip('/')}/page/{page}"
 
     @classmethod
-    def search_url(cls, query):
-        return f"{cls._url_root}/?s={quote(query, safe='')}"
+    def search_url(cls, query, lang=''):
+        return f"{cls._with_lang(cls._url_root + '/', lang)}?s={quote(query, safe='')}"
 
     @classmethod
-    def search(cls, query):
-        return cls.fetch_page(cls.search_url(query))
+    def search(cls, query, lang=''):
+        return cls.fetch_page(cls.search_url(query, lang=lang))

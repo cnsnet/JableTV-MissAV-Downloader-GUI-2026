@@ -2,13 +2,23 @@
 # coding: utf-8
 """Localization strings for the GUI apps."""
 
+LANGUAGES = [('en', 'English'), ('zh', '繁體中文'), ('zh-Hans', '简体中文'), ('ja', '日本語')]
+FONTS = {'en': 'Segoe UI', 'zh': 'Microsoft JhengHei', 'zh-Hans': 'Microsoft YaHei', 'ja': 'Yu Gothic UI'}
+
+
 STRINGS = {
     'zh': {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.4.0',
+        'version_label': 'v2.5.0',
         'by_author': 'by ALOS',
+        'status_ready': '就緒',
+        'site_label': '網站',
+        'open_btn': '開啟',
+        'go_btn': '前往',
+        'lang_label': '語言',
+        'lang_picker_title': '選擇語言',
         'cf_card_title': '🛡️ Cloudflare 阻擋突破（進階）',
         'cf_card_desc': '匯入瀏覽器通過 Cloudflare 後取得的 cf_clearance，僅套用到選取網域。',
         'cf_host_label': '網站網域',
@@ -23,8 +33,8 @@ STRINGS = {
             '步驟：用 Chrome 開啟該網站 → 通過 Cloudflare 驗證 → F12 → Application/應用程式 → Cookies → '
             '複製 cf_clearance 的值貼到上面；User-Agent 在 Console 輸入 navigator.userAgent 複製。\n\n'
             '注意：cf_clearance 綁定你的「IP + User-Agent」——App 必須與瀏覽器走相同網路/VPN、相同 UA；'
-            '它會過期（約 30 分鐘～數小時），失效就重新複製；僅對該網域有效；'
-            '這是進階盡力而為的方法，不保證成功。嫌麻煩可改用 Cloudflare WARP（免費、乾淨 IP）。資料僅存在你本機。'
+            '它會過期（約 30 分鐘～數小時），失效就重新複製；僅對該網域有效；這是進階盡力而為的方法，不保證成功。'
+            '嫌麻煩可改用 Cloudflare WARP（免費、乾淨 IP）。資料僅存在你本機。'
         ),
 
         # Tabs
@@ -46,6 +56,9 @@ STRINGS = {
         'next_page': '下一頁 >',
         'select': '選取',
         'selected': '已選中',
+        'sidebar_title': '標籤選片',
+        'tags_jable_only': '僅 JableTV\n支援標籤',
+        'no_thumbnail': '(無縮圖)',
         'url_not_supported': '不支援的網址',
         'crawling_url': '正在抓取列表...',
         'crawl_added': '已加入 {n} 部影片到下載清單',
@@ -71,6 +84,7 @@ STRINGS = {
         'unlimited': '無限制',
         'concurrent': '同時下載數',
         'max_n': '最多 {n} 個',
+        'dl_list_empty': '下載清單是空的',
 
         # Download states
         'state_downloading': '下載中',
@@ -118,22 +132,55 @@ STRINGS = {
         'st_bad_date': '日期格式錯誤',
         'st_bad_date_msg': '基準日期格式應為 YYYY-MM-DD。',
         'st_started_msg': '背景偵測已啟動 — 你可以將視窗最小化。',
+        'st_subtitle': '多站自動下載',
+        'st_window_title': '{app} v{version} — 多站自動下載工具 — by ALOS',
+        'st_version_by': 'v{version}  |  by ALOS',
+        'st_lang_label': '語言',
+        'st_lang_picker_title': '選擇語言',
+        'st_detect_failed': '⚠ 偵測失敗，將重試',
+        'st_choose_folder': '選擇影片儲存資料夾',
+        'st_blocked': '遭到阻擋',
+        'st_interval': '檢查間隔',
+        'st_site': '網站',
+        'st_category': '分類',
+        'st_status': '狀態',
+        'st_log': '紀錄',
+        'st_resolution': '影片畫質:',
+        'st_resolution_highest': '最高畫質',
+        'st_resolution_lowest': '最低畫質（省流量）',
+        'st_scan_running': '背景偵測執行中，請稍候',
+        'st_checking_now': '立即檢查中...',
+        'st_preparing': '準備中...',
+        'st_folder_set': '儲存位置已設為 {path}',
+        'st_target_log': '目標: {sites} — {categories}',
+        'st_baseline_log': '基準日期: {date}',
+        'st_no_output_configured': '尚未設定儲存位置。',
+        'st_no_targets_selected': '尚未選擇網站或分類。',
+        'st_worker_started': '背景工作已啟動。',
+        'st_worker_stopped': '背景工作已停止。',
 
-        # Settings — resolution
+        # Settings - resolution
         'resolution_setting': '影片畫質',
         'resolution_desc': '選擇下載影片的解析度偏好（低畫質可省流量、加快下載）',
         'resolution_highest': '最高畫質',
         'resolution_lowest': '最低畫質（省流量）',
 
-        # MissAV language prefix for URLs
-        'missav_lang': 'cn',
+        # Site language prefixes
+        'missav_lang': '',
+        'supjav_lang': 'zh',
     },
     'en': {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.4.0',
+        'version_label': 'v2.5.0',
         'by_author': 'by ALOS',
+        'status_ready': 'Ready',
+        'site_label': 'Site',
+        'open_btn': 'Open',
+        'go_btn': 'Go',
+        'lang_label': 'Language',
+        'lang_picker_title': 'Choose language',
         'cf_card_title': '🛡️ Cloudflare Bypass (Advanced)',
         'cf_card_desc': 'Import a cf_clearance value from a browser session that passed Cloudflare. Applies only to the selected host.',
         'cf_host_label': 'Host',
@@ -172,6 +219,9 @@ STRINGS = {
         'next_page': 'Next >',
         'select': 'Select',
         'selected': 'Selected',
+        'sidebar_title': 'Tags',
+        'tags_jable_only': 'Tags: JableTV only',
+        'no_thumbnail': '(no thumbnail)',
         'loading_browse': 'Loading...',
         'no_results': 'No videos found',
         'fetch_error': 'Failed to load, please try again',
@@ -197,6 +247,7 @@ STRINGS = {
         'unlimited': 'Unlimited',
         'concurrent': 'Concurrent',
         'max_n': 'Max {n}',
+        'dl_list_empty': 'No downloads yet',
 
         # Download states
         'state_downloading': 'Downloading',
@@ -244,30 +295,397 @@ STRINGS = {
         'st_bad_date': 'Invalid Date',
         'st_bad_date_msg': 'Date format should be YYYY-MM-DD.',
         'st_started_msg': 'Monitoring started — you can minimize this window.',
+        'st_subtitle': 'Multi-Site Auto Download',
+        'st_window_title': '{app} v{version} — Multi-Site Auto Downloader — by ALOS',
+        'st_version_by': 'v{version}  |  by ALOS',
+        'st_lang_label': 'Language',
+        'st_lang_picker_title': 'Choose language',
+        'st_detect_failed': '⚠ Detection failed, retrying',
+        'st_choose_folder': 'Choose video save folder',
+        'st_blocked': 'Blocked',
+        'st_interval': 'Interval',
+        'st_site': 'Site',
+        'st_category': 'Category',
+        'st_status': 'Status',
+        'st_log': 'Log',
+        'st_resolution': 'Video Quality:',
+        'st_resolution_highest': 'Highest Quality',
+        'st_resolution_lowest': 'Lowest Quality (Saving Mode)',
+        'st_scan_running': 'Background scan is already running; please wait.',
+        'st_checking_now': 'Checking now...',
+        'st_preparing': 'Preparing...',
+        'st_folder_set': 'Save location set to {path}',
+        'st_target_log': 'Target: {sites} — {categories}',
+        'st_baseline_log': 'Baseline date: {date}',
+        'st_no_output_configured': 'No output folder configured.',
+        'st_no_targets_selected': 'No sites/categories selected.',
+        'st_worker_started': 'Worker started.',
+        'st_worker_stopped': 'Worker stopped.',
 
-        # Settings — resolution
+        # Settings - resolution
         'resolution_setting': 'Video Quality',
         'resolution_desc': 'Choose download resolution preference (lowest saves bandwidth)',
         'resolution_highest': 'Highest Quality',
         'resolution_lowest': 'Lowest Quality (Saving Mode)',
 
-        # MissAV language prefix for URLs
+        # Site language prefixes
         'missav_lang': 'en',
+        'supjav_lang': '',
+    },
+    'zh-Hans': {
+        # Header
+        'app_brand_1': 'JableTV · MissAV · SupJav',
+        'app_brand_2': '下载器',
+        'version_label': 'v2.5.0',
+        'by_author': 'by ALOS',
+        'status_ready': '就绪',
+        'site_label': '网站',
+        'open_btn': '打开',
+        'go_btn': '前往',
+        'lang_label': '语言',
+        'lang_picker_title': '选择语言',
+        'cf_card_title': '🛡️ Cloudflare 验证绕过（高级）',
+        'cf_card_desc': '从已通过 Cloudflare 的浏览器会话导入 cf_clearance，仅应用于所选域名。',
+        'cf_host_label': '站点域名',
+        'cf_cookie_label': 'cf_clearance Cookie',
+        'cf_ua_label': 'User-Agent',
+        'cf_save': '保存',
+        'cf_clear': '清除',
+        'cf_saved': '已保存',
+        'cf_status': '已设置: {hosts}',
+        'cf_status_none': '尚未设置任何站点',
+        'cf_help': (
+            '步骤：用 Chrome 打开该网站 → 通过 Cloudflare 验证 → F12 → Application/应用 → Cookies → '
+            '复制 cf_clearance 的值并粘贴到上方；User-Agent 可在 Console 输入 navigator.userAgent 后复制。\n\n'
+            '注意：cf_clearance 会绑定你的“IP + User-Agent”，App 必须与浏览器使用相同网络/VPN 和相同 UA；'
+            '它会过期（约 30 分钟到数小时），失效后需要重新复制；仅对该域名有效；这是高级的尽力而为方案，不保证成功。'
+            '想省事可以改用 Cloudflare WARP（免费、干净 IP）。数据只保存在你的本机。'
+        ),
+
+        # Tabs
+        'tab_browse': '浏览',
+        'tab_download': '下载',
+        'tab_settings': '设置',
+
+        # Browse tab
+        'browse_category': '浏览视频',
+        'category_label': '分类:',
+        'sort_latest': '最新',
+        'search_placeholder': '搜索...',
+        'search_btn': '搜索',
+        'download_selected': '下载所选',
+        'select_all_btn': '全选',
+        'first_page': '« 首页',
+        'prev_page': '< 上一页',
+        'page_n': '第 {n} 页',
+        'next_page': '下一页 >',
+        'select': '选择',
+        'selected': '已选',
+        'sidebar_title': '标签选片',
+        'tags_jable_only': '仅 JableTV\n支持标签',
+        'no_thumbnail': '(无缩略图)',
+        'loading_browse': '加载中...',
+        'no_results': '没有找到视频',
+        'fetch_error': '加载失败，请重试',
+        'url_not_supported': '不支持的网址',
+        'crawling_url': '正在抓取列表...',
+        'crawl_added': '已将 {n} 部视频加入下载队列',
+        'category_load_failed': '分类加载失败，请重试；可能被 Cloudflare 阻挡',
+        'mirrors_blocked': '所有镜像都被 Cloudflare 阻挡，请使用 VPN 或其他网络',
+        'blocked_vpn_hint': '所有镜像都被 Cloudflare 阻挡，请使用 VPN/其他网络，或在设置中导入 cf_clearance Cookie。',
+        'parse_failed_short': '被阻挡或解析失败，请重试。',
+        'open_folder_failed_title': '无法打开文件夹',
+
+        # Download tab
+        'save_location': '保存到',
+        'url_label': '视频网址',
+        'browse_folder': '浏览',
+        'download_btn': '▶ 下载',
+        'download_all_btn': '▶▶ 全部下载',
+        'cancel_all': '全部取消',
+        'clear_list': '清空',
+        'browse_import': '导入所选浏览项',
+        'speed_limit': '速度',
+        'unlimited': '不限速',
+        'concurrent': '并发下载',
+        'max_n': '最多 {n} 个',
+        'dl_list_empty': '下载列表为空',
+
+        # Download states
+        'state_downloading': '下载中',
+        'state_waiting': '等待中',
+        'state_downloaded': '已下载',
+        'state_cancelled': '已取消',
+        'state_error': '错误',
+        'state_merging': '合并中',
+
+        # Settings tab
+        'settings_title': '设置',
+        'settings_desc': '管理下载偏好和应用信息',
+        'download_settings': '下载设置',
+        'save_location_setting': '保存位置',
+        'save_location_desc': '配置默认下载目录',
+        'speed_limit_setting': '速度限制',
+        'speed_limit_desc': '限制每个下载任务的最大带宽',
+        'concurrent_setting': '并发下载数',
+        'concurrent_desc': '同时进行的下载任务数量，过多可能降低单个任务速度',
+        'about': '关于',
+        'app_full_name': 'JableTV · MissAV · SupJav 下载器',
+        'disclaimer': '仅供学习与研究使用',
+
+        # Smalltool
+        'st_title': '多站自动下载工具',
+        'st_header': 'Jable 小工具',
+        'st_header_sub': '多站自动下载',
+        'st_save_location': '保存位置:',
+        'st_browse': '浏览',
+        'st_baseline_date': '基准日期:',
+        'st_date_hint': '(YYYY-MM-DD，只下载此日期之后的视频)',
+        'st_select_hint': '选择站点与分类（可多选）:',
+        'st_select_all': '全选',
+        'st_start': '▶ 启动后台监测',
+        'st_stop': '■ 停止',
+        'st_check_now': '↻ 立即检查一次',
+        'st_idle': '空闲',
+        'st_running': '● 运行中',
+        'st_stopped': '已停止',
+        'st_footer': '提示：关闭窗口会结束程序。最小化后程序仍在后台运行。每 24 小时自动检查一次。',
+        'st_no_folder': '缺少文件夹',
+        'st_no_folder_msg': '请先选择视频保存文件夹。',
+        'st_no_cat': '未选择分类',
+        'st_no_cat_msg': '请至少勾选一个站点分类。',
+        'st_bad_date': '日期格式错误',
+        'st_bad_date_msg': '基准日期格式应为 YYYY-MM-DD。',
+        'st_started_msg': '后台监测已启动，可以将窗口最小化。',
+        'st_subtitle': '多站自动下载',
+        'st_window_title': '{app} v{version} — 多站自动下载工具 — by ALOS',
+        'st_version_by': 'v{version}  |  by ALOS',
+        'st_lang_label': '语言',
+        'st_lang_picker_title': '选择语言',
+        'st_detect_failed': '⚠ 检测失败，将重试',
+        'st_choose_folder': '选择视频保存文件夹',
+        'st_blocked': '已被阻止',
+        'st_interval': '检查间隔',
+        'st_site': '站点',
+        'st_category': '分类',
+        'st_status': '状态',
+        'st_log': '日志',
+        'st_resolution': '视频画质:',
+        'st_resolution_highest': '最高画质',
+        'st_resolution_lowest': '最低画质（省流量）',
+        'st_scan_running': '后台监测正在运行，请稍候',
+        'st_checking_now': '正在立即检查...',
+        'st_preparing': '准备中...',
+        'st_folder_set': '保存位置已设为 {path}',
+        'st_target_log': '目标: {sites} — {categories}',
+        'st_baseline_log': '基准日期: {date}',
+        'st_no_output_configured': '尚未设置保存位置。',
+        'st_no_targets_selected': '尚未选择站点或分类。',
+        'st_worker_started': '后台任务已启动。',
+        'st_worker_stopped': '后台任务已停止。',
+
+        # Settings - resolution
+        'resolution_setting': '视频画质',
+        'resolution_desc': '选择下载视频的清晰度偏好（低画质可省流量、加快下载）',
+        'resolution_highest': '最高画质',
+        'resolution_lowest': '最低画质（省流量）',
+
+        # Site language prefixes
+        'missav_lang': 'cn',
+        'supjav_lang': 'zh',
+    },
+    'ja': {
+        # Header
+        'app_brand_1': 'JableTV · MissAV · SupJav',
+        'app_brand_2': 'ダウンローダー',
+        'version_label': 'v2.5.0',
+        'by_author': 'by ALOS',
+        'status_ready': '準備完了',
+        'site_label': 'サイト',
+        'open_btn': '開く',
+        'go_btn': '移動',
+        'lang_label': '言語',
+        'lang_picker_title': '言語を選択',
+        'cf_card_title': '🛡️ Cloudflare バイパス（上級者向け）',
+        'cf_card_desc': 'Cloudflare を通過したブラウザーセッションの cf_clearance を取り込みます。選択したホストにのみ適用されます。',
+        'cf_host_label': 'ホスト',
+        'cf_cookie_label': 'cf_clearance Cookie',
+        'cf_ua_label': 'User-Agent',
+        'cf_save': '保存',
+        'cf_clear': 'クリア',
+        'cf_saved': '保存済み',
+        'cf_status': '設定済み: {hosts}',
+        'cf_status_none': '未設定',
+        'cf_help': (
+            '手順: Chrome でサイトを開く → Cloudflare 認証を通過 → F12 → Application → Cookies → '
+            'cf_clearance の値をコピーして上に貼り付けます。User-Agent は Console で navigator.userAgent を実行してコピーします。\n\n'
+            '注意: cf_clearance は IP + User-Agent に紐づくため、アプリはブラウザーと同じネットワーク/VPN と UA を使う必要があります。'
+            '有効期限があります（約30分から数時間）。動かなくなったら再度コピーしてください。そのドメインでのみ有効です。'
+            'これは上級者向けのベストエフォート方式で、成功は保証されません。手間を減らすには Cloudflare WARP（無料、クリーンなIP）を使ってください。'
+            'データはこのPCにのみ保存されます。'
+        ),
+
+        # Tabs
+        'tab_browse': '閲覧',
+        'tab_download': 'ダウンロード',
+        'tab_settings': '設定',
+
+        # Browse tab
+        'browse_category': '動画を閲覧',
+        'category_label': 'カテゴリ:',
+        'sort_latest': '最新',
+        'search_placeholder': '検索...',
+        'search_btn': '検索',
+        'download_selected': '選択項目をダウンロード',
+        'select_all_btn': 'すべて選択',
+        'first_page': '« 最初',
+        'prev_page': '< 前へ',
+        'page_n': '{n} ページ',
+        'next_page': '次へ >',
+        'select': '選択',
+        'selected': '選択中',
+        'sidebar_title': 'タグ',
+        'tags_jable_only': 'タグは\nJableTVのみ',
+        'no_thumbnail': '(サムネイルなし)',
+        'loading_browse': '読み込み中...',
+        'no_results': '動画が見つかりません',
+        'fetch_error': '読み込みに失敗しました。もう一度お試しください',
+        'url_not_supported': '対応していないURL',
+        'crawling_url': '一覧を取得中...',
+        'crawl_added': '{n} 件の動画をダウンロードキューに追加しました',
+        'category_load_failed': 'カテゴリの読み込みに失敗しました。Cloudflare にブロックされている可能性があります。',
+        'mirrors_blocked': 'すべてのミラーが Cloudflare にブロックされました。VPN または別のネットワークを使用してください。',
+        'blocked_vpn_hint': 'すべてのミラーが Cloudflare にブロックされました。VPN/別ネットワークを使用するか、設定で cf_clearance Cookie を取り込んでください。',
+        'parse_failed_short': 'ブロックまたは解析に失敗しました。再試行してください。',
+        'open_folder_failed_title': 'フォルダーを開けません',
+
+        # Download tab
+        'save_location': '保存先',
+        'url_label': '動画URL',
+        'browse_folder': '参照',
+        'download_btn': '▶ ダウンロード',
+        'download_all_btn': '▶▶ すべてダウンロード',
+        'cancel_all': 'すべてキャンセル',
+        'clear_list': 'クリア',
+        'browse_import': '選択した閲覧項目を追加',
+        'speed_limit': '速度',
+        'unlimited': '無制限',
+        'concurrent': '同時実行',
+        'max_n': '最大 {n}',
+        'dl_list_empty': 'ダウンロードはありません',
+
+        # Download states
+        'state_downloading': 'ダウンロード中',
+        'state_waiting': '待機中',
+        'state_downloaded': 'ダウンロード済み',
+        'state_cancelled': 'キャンセル済み',
+        'state_error': 'エラー',
+        'state_merging': '結合中',
+
+        # Settings tab
+        'settings_title': '設定',
+        'settings_desc': 'ダウンロード設定とアプリ情報を管理',
+        'download_settings': 'ダウンロード設定',
+        'save_location_setting': '保存先',
+        'save_location_desc': '既定のダウンロード先フォルダーを設定します',
+        'speed_limit_setting': '速度制限',
+        'speed_limit_desc': 'ダウンロードごとの最大帯域幅を制限します',
+        'concurrent_setting': '同時ダウンロード数',
+        'concurrent_desc': '同時に実行するダウンロード数です。多すぎると個別の速度が低下する場合があります',
+        'about': 'このアプリについて',
+        'app_full_name': 'JableTV · MissAV · SupJav ダウンローダー',
+        'disclaimer': '学習および研究目的でのみ使用してください',
+
+        # Smalltool
+        'st_title': '複数サイト自動ダウンローダー',
+        'st_header': 'Jable ツール',
+        'st_header_sub': '複数サイト自動ダウンロード',
+        'st_save_location': '保存先:',
+        'st_browse': '参照',
+        'st_baseline_date': '基準日:',
+        'st_date_hint': '(YYYY-MM-DD、この日付より後の動画のみダウンロード)',
+        'st_select_hint': 'サイトとカテゴリを選択（複数選択可）:',
+        'st_select_all': 'すべて選択',
+        'st_start': '▶ 監視を開始',
+        'st_stop': '■ 停止',
+        'st_check_now': '↻ 今すぐ確認',
+        'st_idle': '待機中',
+        'st_running': '● 実行中',
+        'st_stopped': '停止済み',
+        'st_footer': 'ヒント: ウィンドウを閉じるとプログラムは終了します。実行を続けるには最小化してください。24時間ごとに自動確認します。',
+        'st_no_folder': 'フォルダー未選択',
+        'st_no_folder_msg': '先に動画の保存先フォルダーを選択してください。',
+        'st_no_cat': 'カテゴリ未選択',
+        'st_no_cat_msg': '少なくとも1つのサイトカテゴリを選択してください。',
+        'st_bad_date': '日付形式エラー',
+        'st_bad_date_msg': '基準日の形式は YYYY-MM-DD です。',
+        'st_started_msg': '監視を開始しました。ウィンドウは最小化できます。',
+        'st_subtitle': '複数サイト自動ダウンロード',
+        'st_window_title': '{app} v{version} — 複数サイト自動ダウンローダー — by ALOS',
+        'st_version_by': 'v{version}  |  by ALOS',
+        'st_lang_label': '言語',
+        'st_lang_picker_title': '言語を選択',
+        'st_detect_failed': '⚠ 検出に失敗しました。再試行します',
+        'st_choose_folder': '動画の保存先フォルダーを選択',
+        'st_blocked': 'ブロックされました',
+        'st_interval': '確認間隔',
+        'st_site': 'サイト',
+        'st_category': 'カテゴリ',
+        'st_status': '状態',
+        'st_log': 'ログ',
+        'st_resolution': '動画画質:',
+        'st_resolution_highest': '最高画質',
+        'st_resolution_lowest': '最低画質（通信量を節約）',
+        'st_scan_running': 'バックグラウンド監視を実行中です。しばらくお待ちください。',
+        'st_checking_now': '確認中...',
+        'st_preparing': '準備中...',
+        'st_folder_set': '保存先を {path} に設定しました',
+        'st_target_log': '対象: {sites} — {categories}',
+        'st_baseline_log': '基準日: {date}',
+        'st_no_output_configured': '保存先が設定されていません。',
+        'st_no_targets_selected': 'サイトまたはカテゴリが選択されていません。',
+        'st_worker_started': 'バックグラウンド処理を開始しました。',
+        'st_worker_stopped': 'バックグラウンド処理を停止しました。',
+
+        # Settings - resolution
+        'resolution_setting': '画質',
+        'resolution_desc': 'ダウンロードする動画の解像度設定を選択します（低画質は通信量を節約できます）',
+        'resolution_highest': '最高画質',
+        'resolution_lowest': '最低画質（節約モード）',
+
+        # Site language prefixes
+        'missav_lang': 'ja',
+        'supjav_lang': 'ja',
     },
 }
 
-# Active language — set before GUI init
-_current_lang = 'zh'
+STATE_LABELS = {
+    '下載中': {'en': 'Downloading', 'zh': '下載中', 'zh-Hans': '下载中', 'ja': 'ダウンロード中'},
+    '準備中': {'en': 'Preparing', 'zh': '準備中', 'zh-Hans': '准备中', 'ja': '準備中'},
+    '等待中': {'en': 'Queued', 'zh': '等待中', 'zh-Hans': '等待中', 'ja': '待機中'},
+    '已下載': {'en': 'Done', 'zh': '已完成', 'zh-Hans': '已完成', 'ja': '完了'},
+    '未完成': {'en': 'Incomplete', 'zh': '未完成', 'zh-Hans': '未完成', 'ja': '未完了'},
+    '已取消': {'en': 'Cancelled', 'zh': '已取消', 'zh-Hans': '已取消', 'ja': 'キャンセル'},
+    '網址錯誤': {'en': 'Bad URL', 'zh': '網址錯誤', 'zh-Hans': '网址错误', 'ja': 'URLエラー'},
+    '封鎖/解析失敗': {'en': 'Blocked', 'zh': '封鎖或解析失敗', 'zh-Hans': '封锁或解析失败', 'ja': 'ブロック'},
+}
+
+# Active language - set before GUI init
+_current_lang = 'en'
 
 
 def set_lang(lang: str):
     global _current_lang
-    _current_lang = lang if lang in STRINGS else 'zh'
+    _current_lang = lang if lang in STRINGS else 'en'
 
 
 def T(key: str, **kwargs) -> str:
     """Translate a key to the current language."""
-    s = STRINGS.get(_current_lang, STRINGS['zh']).get(key, key)
+    lang_strings = STRINGS.get(_current_lang, STRINGS['en'])
+    if key in lang_strings:
+        s = lang_strings[key]
+    else:
+        s = STRINGS['en'].get(key, key)
     if kwargs:
         return s.format(**kwargs)
     return s
@@ -275,3 +693,12 @@ def T(key: str, **kwargs) -> str:
 
 def get_lang() -> str:
     return _current_lang
+
+
+def ui_font():
+    return FONTS.get(_current_lang, 'Segoe UI')
+
+
+def state_label(code):
+    labels = STATE_LABELS.get(code, {})
+    return labels.get(_current_lang) or labels.get('en') or code

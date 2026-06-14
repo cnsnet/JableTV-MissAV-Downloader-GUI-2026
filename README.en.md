@@ -34,28 +34,33 @@ Most Jable TV download tools are CLI-only — you need Python, pip, and a termin
 
 ---
 
-## Screenshots (v2.4 redesign · Day / Night themes)
+## Screenshots ("Studio Noir" UI · Multilanguage · Day / Night themes)
 
-> Brand-new "Studio Noir" design with a built-in **one-click day / night theme toggle** (defaults to following your Windows system theme).
+> Built-in **language switch (English / 繁中 / 简中 / 日本語)** and **day / night theme** (defaults to following your Windows system theme).
 
-### JableTV Browse (dark)
+### 🌐 First launch: language picker
 <p align="center">
-  <img src="./img/screenshot_browse_jable.png" width="800" alt="Jable TV download GUI — browse and select videos from JableTV dark theme" />
+  <img src="./img/screenshot_language_picker.png" width="420" alt="JableTV Downloader first-run language picker — English, Traditional Chinese, Simplified Chinese, Japanese" />
 </p>
 
-### MissAV Browse (dark)
+### English UI (dark)
 <p align="center">
-  <img src="./img/screenshot_browse_missav.png" width="800" alt="MissAV download GUI — browse and select videos from MissAV dark theme" />
+  <img src="./img/screenshot_browse_en.png" width="800" alt="Jable TV MissAV SupJav download GUI — English interface, browse with thumbnails, dark theme" />
 </p>
 
-### SupJav Browse (dark)
+### 日本語 UI (dark)
 <p align="center">
-  <img src="./img/screenshot_browse_supjav.png" width="800" alt="SupJav download GUI — browse and select videos from SupJav" />
+  <img src="./img/screenshot_browse_ja.png" width="800" alt="Jable TV MissAV SupJav downloader — Japanese interface browse dark theme" />
 </p>
 
-### ☀️ Light theme (one-click toggle)
+### 简体中文 UI (dark)
 <p align="center">
-  <img src="./img/screenshot_theme_light.png" width="800" alt="JableTV MissAV SupJav Downloader light theme" />
+  <img src="./img/screenshot_browse_zh_hans.png" width="800" alt="JableTV MissAV SupJav downloader — Simplified Chinese interface browse dark theme" />
+</p>
+
+### ☀️ Traditional Chinese · Light theme
+<p align="center">
+  <img src="./img/screenshot_theme_light.png" width="800" alt="JableTV MissAV SupJav Downloader Traditional Chinese light theme" />
 </p>
 
 ### Download Manager (Live Progress Bars)
@@ -63,9 +68,9 @@ Most Jable TV download tools are CLI-only — you need Python, pip, and a termin
   <img src="./img/screenshot_download.png" width="800" alt="Jable TV MissAV batch download manager with live progress bars" />
 </p>
 
-### Settings (theme toggle + Cloudflare bypass)
+### Settings (language / theme switch + Cloudflare bypass)
 <p align="center">
-  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader settings — theme toggle and Cloudflare bypass" />
+  <img src="./img/screenshot_settings.png" width="800" alt="JableTV MissAV Downloader settings — language and theme switch, Cloudflare bypass" />
 </p>
 
 ---
@@ -124,9 +129,10 @@ Go to **[Releases](../../releases)** and download (each ~58 MB, **ffmpeg bundled
 
 - **JableTV_Modern.exe** — Full downloader (browse / search / multi-select / parallel)
 - **Jable_smalltool.exe** — Daily auto-downloader (set the folder once, leave it running)
-- English UI: **JableTV_Modern_en.exe** / **Jable_smalltool_en.exe**
 
 Double-click to run — **no Python and no separate ffmpeg install needed**.
+
+> 🌐 **Built-in multilanguage**: English / 繁體中文 / 简体中文 / 日本語. A language picker appears on first launch, and you can switch any time from the top-right (no more separate English exe).
 
 #### 🌏 Faster / mirrored download (when GitHub is slow or blocked)
 
@@ -136,8 +142,6 @@ If the GitHub Release download is slow or fails (e.g. in mainland China), prefix
 |---|---|
 | JableTV_Modern.exe | **[gh-proxy mirror](https://gh-proxy.com/https://github.com/Alos21750/JableTV-MissAV-Downloader-GUI-2026/releases/latest/download/JableTV_Modern.exe)** |
 | Jable_smalltool.exe | **[gh-proxy mirror](https://gh-proxy.com/https://github.com/Alos21750/JableTV-MissAV-Downloader-GUI-2026/releases/latest/download/Jable_smalltool.exe)** |
-| JableTV_Modern_en.exe | **[gh-proxy mirror](https://gh-proxy.com/https://github.com/Alos21750/JableTV-MissAV-Downloader-GUI-2026/releases/latest/download/JableTV_Modern_en.exe)** |
-| Jable_smalltool_en.exe | **[gh-proxy mirror](https://gh-proxy.com/https://github.com/Alos21750/JableTV-MissAV-Downloader-GUI-2026/releases/latest/download/Jable_smalltool_en.exe)** |
 
 > 💡 If `gh-proxy.com` is down, swap the `https://gh-proxy.com/` prefix for `https://gh-proxy.org/` or `https://ghfast.top/`.
 
