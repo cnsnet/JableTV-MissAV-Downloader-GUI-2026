@@ -24,6 +24,22 @@ def _make_scraper():
     return cloudscraper.create_scraper(browser=request_headers, delay=10)
 
 
+def _apply_jable_lang(scraper):
+    """Set JableTV's kt_rt_lang cookie from the current UI language so titles/listings/
+    categories come back in en/jp (empty -> default Traditional Chinese). Applies to both
+    jable.tv and the fs1.app mirror. Safe/idempotent; tolerates curl_cffi or cloudscraper."""
+    try:
+        from locales import T
+        val = T('jable_lang') or ''
+    except Exception:
+        val = ''
+    for dom in ('.jable.tv', '.fs1.app'):
+        try:
+            scraper.cookies.set('kt_rt_lang', val, domain=dom)
+        except Exception:
+            pass
+
+
 class SiteJableTV(M3U8Crawler):
     website_pattern = r'https://jable\.tv/videos/.+/'
     website_dirname_pattern = r'https://jable\.tv/videos/(.+)/$'
@@ -32,6 +48,7 @@ class SiteJableTV(M3U8Crawler):
         with _make_scraper() as scraper:
             def _validate(resp):
                 return ('og:title' in resp.text) and ('m3u8' in resp.text)
+            _apply_jable_lang(scraper)
             htmlfile, host, reason = fetch_with_mirrors(scraper, self._url, 'jable', _validate, timeout=30)
         if reason != 'ok':
             if reason == 'blocked':
@@ -105,6 +122,7 @@ class JableTVList(SiteUrlList_M3U8):
                 def _validate(resp):
                     s = BeautifulSoup(resp.content, 'html.parser')
                     return bool(s.find('div', id=lambda x: x and x.startswith('list_videos')) or s.find('div', id='site-content'))
+                _apply_jable_lang(_scr)
                 htmlfile, host, reason = fetch_with_mirrors(_scr, url, 'jable', _validate, timeout=30)
             if reason == 'ok':
                 content = htmlfile.content
@@ -290,7 +308,9 @@ class JableTVBrowser:
             def _validate(resp):
                 s = BeautifulSoup(resp.content, 'html.parser')
                 return bool(s.select('a[href*="/categories/"]'))
-            r, host, reason = fetch_with_mirrors(cls._get_scraper(), f'{cls._url_root}/categories/', 'jable', _validate, timeout=30)
+            scr = cls._get_scraper()
+            _apply_jable_lang(scr)
+            r, host, reason = fetch_with_mirrors(scr, f'{cls._url_root}/categories/', 'jable', _validate, timeout=30)
             if reason != 'ok':
                 return cats
             soup = BeautifulSoup(r.content, 'html.parser')
@@ -315,7 +335,9 @@ class JableTVBrowser:
             s = BeautifulSoup(resp.content, 'html.parser')
             dl = s.find('div', id=lambda x: x and x.startswith('list_videos'))
             return bool(dl and dl.select('div.video-img-box'))
-        resp, host, reason = fetch_with_mirrors(cls._get_scraper(), url, 'jable', _validate)
+        scr = cls._get_scraper()
+        _apply_jable_lang(scr)
+        resp, host, reason = fetch_with_mirrors(scr, url, 'jable', _validate)
         if reason != 'ok':
             if reason == 'blocked':
                 raise MirrorsBlockedError(url)

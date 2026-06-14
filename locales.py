@@ -16,7 +16,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.5.2',
+        'version_label': 'v2.5.3',
         'by_author': 'by ALOS',
         'status_ready': '就緒',
         'site_label': '網站',
@@ -173,12 +173,13 @@ STRINGS = {
         # Site language prefixes
         'missav_lang': '',
         'supjav_lang': 'zh',
+        'jable_lang': '',
     },
     'en': {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.5.2',
+        'version_label': 'v2.5.3',
         'by_author': 'by ALOS',
         'status_ready': 'Ready',
         'site_label': 'Site',
@@ -336,12 +337,13 @@ STRINGS = {
         # Site language prefixes
         'missav_lang': 'en',
         'supjav_lang': '',
+        'jable_lang': 'en',
     },
     'zh-Hans': {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': '下载器',
-        'version_label': 'v2.5.2',
+        'version_label': 'v2.5.3',
         'by_author': 'by ALOS',
         'status_ready': '就绪',
         'site_label': '网站',
@@ -498,12 +500,13 @@ STRINGS = {
         # Site language prefixes
         'missav_lang': 'cn',
         'supjav_lang': 'zh',
+        'jable_lang': '',
     },
     'ja': {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'ダウンローダー',
-        'version_label': 'v2.5.2',
+        'version_label': 'v2.5.3',
         'by_author': 'by ALOS',
         'status_ready': '準備完了',
         'site_label': 'サイト',
@@ -661,6 +664,7 @@ STRINGS = {
         # Site language prefixes
         'missav_lang': 'ja',
         'supjav_lang': 'ja',
+        'jable_lang': 'jp',
     },
 }
 
