@@ -11,7 +11,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.5.0',
+        'version_label': 'v2.5.1',
         'by_author': 'by ALOS',
         'status_ready': '就緒',
         'site_label': '網站',
@@ -173,7 +173,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'Downloader',
-        'version_label': 'v2.5.0',
+        'version_label': 'v2.5.1',
         'by_author': 'by ALOS',
         'status_ready': 'Ready',
         'site_label': 'Site',
@@ -336,7 +336,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': '下载器',
-        'version_label': 'v2.5.0',
+        'version_label': 'v2.5.1',
         'by_author': 'by ALOS',
         'status_ready': '就绪',
         'site_label': '网站',
@@ -498,7 +498,7 @@ STRINGS = {
         # Header
         'app_brand_1': 'JableTV · MissAV · SupJav',
         'app_brand_2': 'ダウンローダー',
-        'version_label': 'v2.5.0',
+        'version_label': 'v2.5.1',
         'by_author': 'by ALOS',
         'status_ready': '準備完了',
         'site_label': 'サイト',

@@ -49,7 +49,7 @@ except Exception:
 
 # ── Constants ────────────────────────────────────────────────────────
 APP_NAME = 'Jable_smalltool'
-APP_VERSION = '2.5.0'
+APP_VERSION = '2.5.1'
 _yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 DEFAULT_BASELINE_DATE = _yesterday.strftime('%Y-%m-%d')
 DEFAULT_BASELINE_DT = datetime(_yesterday.year, _yesterday.month, _yesterday.day, tzinfo=timezone.utc)
@@ -651,17 +651,12 @@ class SmallToolWorker:
 class SmallToolApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.withdraw()
         self._lang_code_by_name = {name: code for code, name in LANGUAGES}
         self._lang_name_by_code = {code: name for code, name in LANGUAGES}
 
         stored = config.get_ui_lang()
-        if stored is None:
-            chosen = self._ask_language_first_run()
-            set_lang(chosen)
-            config.set_ui_lang(chosen)
-        else:
-            set_lang(stored)
+        set_lang(stored or 'en')
+        self._needs_lang_prompt = (stored is None)
 
         self._update_window_title()
         self.geometry('860x680')
@@ -683,7 +678,6 @@ class SmallToolApp(tk.Tk):
         self._build_ui()
         self._load_selections_from_config()
         self._sync_select_all_vars()
-        self.deiconify()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
 
         # Auto-start if configured
@@ -692,6 +686,8 @@ class SmallToolApp(tk.Tk):
 
         self._schedule_log_flush()
         self._schedule_progress_refresh()
+        if self._needs_lang_prompt:
+            self.after(300, self._first_run_language_prompt)
 
     def _update_window_title(self):
         self.title(T('st_window_title', app=APP_NAME, version=APP_VERSION))
@@ -735,6 +731,14 @@ class SmallToolApp(tk.Tk):
         popup.grab_set()
         self.wait_window(popup)
         return result['code']
+
+    def _first_run_language_prompt(self):
+        if getattr(self, '_is_closing', False):
+            return
+        code = self._ask_language_first_run()
+        config.set_ui_lang(code)
+        if code != get_lang():
+            self._apply_language(code)
 
     def _on_lang_change(self, name: str):
         code = self._lang_code_by_name.get(name, 'en')

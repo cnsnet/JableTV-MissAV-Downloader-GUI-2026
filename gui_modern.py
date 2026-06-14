@@ -348,14 +348,9 @@ class ModernApp(ctk.CTk):
         ctk.set_appearance_mode(self._theme_mode)
         ctk.set_default_color_theme('blue')
 
-        self.withdraw()
         stored = config.get_ui_lang()
-        if stored is None:
-            chosen = self._ask_language_first_run()
-            set_lang(chosen)
-            config.set_ui_lang(chosen)
-        else:
-            set_lang(stored)
+        set_lang(stored or 'en')
+        self._needs_lang_prompt = (stored is None)
 
         self.title('JableTV · MissAV · SupJav Downloader — by ALOS')
         self.geometry('1280x800')
@@ -394,7 +389,6 @@ class ModernApp(ctk.CTk):
         self._dlmgr.load_csv(CSV_PATH)
 
         self._build_ui()
-        self.deiconify()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
 
         # Start periodic refresh for downloads
@@ -405,57 +399,73 @@ class ModernApp(ctk.CTk):
 
         # Load initial categories in background
         self._load_categories()
+        if self._needs_lang_prompt:
+            self.after(250, self._first_run_language_prompt)
 
     def _ask_language_first_run(self):
         result = {'code': 'en'}
-        popup = ctk.CTkToplevel(self)
+        idx = 0 if ctk.get_appearance_mode() == 'Light' else 1
+        def C(tok):                      # resolve a (light,dark) token to a single hex string
+            return tok[idx] if isinstance(tok, (tuple, list)) else tok
+        bg, card, fg, border, accent, cardh = (
+            C(BG_DARK), C(BG_CARD), C(TEXT_PRI), C(BORDER_HOVER), C(ACCENT), C(BG_CARD_HOVER))
+
+        popup = tk.Toplevel(self)
         popup.title(T('lang_picker_title'))
+        popup.configure(bg=bg)
         popup.resizable(False, False)
         popup.transient(self)
 
-        picker_font = 'Microsoft JhengHei'
-        ctk.CTkLabel(
-            popup, text=T('lang_picker_title'),
-            font=(picker_font, 18, 'bold'),
-            text_color=TEXT_PRI).pack(padx=28, pady=(24, 14))
+        picker_font = 'Microsoft JhengHei'   # renders all 4 native scripts
+        tk.Label(popup, text=T('lang_picker_title'), bg=bg, fg=fg,
+                 font=(picker_font, 15, 'bold')).pack(padx=32, pady=(24, 14))
 
         def _choose(code='en'):
             result['code'] = code
-            try:
-                popup.grab_release()
-            except tk.TclError:
-                pass
+            try: popup.grab_release()
+            except tk.TclError: pass
             popup.destroy()
 
         for code, name in LANGUAGES:
-            ctk.CTkButton(
-                popup, text=name, width=260, height=42,
-                font=(picker_font, 15),
-                fg_color=BG_CARD, border_width=1, border_color=BORDER_HOVER,
-                hover_color=BG_CARD_HOVER, text_color=TEXT_PRI,
-                command=lambda c=code: _choose(c)).pack(padx=28, pady=5)
+            tk.Button(popup, text=name, width=22,
+                      bg=card, fg=fg, activebackground=accent, activeforeground='#ffffff',
+                      relief='flat', bd=1, highlightbackground=border, highlightthickness=1,
+                      padx=12, pady=9, font=(picker_font, 12), cursor='hand2',
+                      command=lambda c=code: _choose(c)).pack(padx=32, pady=5)
 
         popup.protocol('WM_DELETE_WINDOW', lambda: _choose('en'))
         popup.update_idletasks()
-        width = max(popup.winfo_width(), 320)
-        height = max(popup.winfo_height(), 280)
-        x = max((self.winfo_screenwidth() - width) // 2, 0)
-        y = max((self.winfo_screenheight() - height) // 2, 0)
-        popup.geometry(f'{width}x{height}+{x}+{y}')
-        popup.grab_set()
+        w = max(popup.winfo_reqwidth(), 320)
+        h = max(popup.winfo_reqheight(), 280)
+        x = max((self.winfo_screenwidth() - w) // 2, 0)
+        y = max((self.winfo_screenheight() - h) // 3, 0)
+        popup.geometry(f'{w}x{h}+{x}+{y}')
+        # Force the picker visible (plain tk.Toplevel shows reliably in frozen builds)
+        popup.deiconify()
         popup.lift()
         try:
             popup.attributes('-topmost', True)
-            def _drop_topmost():
-                try:
-                    popup.attributes('-topmost', False)
-                except tk.TclError:
-                    pass
-            popup.after(150, _drop_topmost)
+            popup.after(300, lambda: popup.winfo_exists() and popup.attributes('-topmost', False))
         except tk.TclError:
             pass
+        popup.update_idletasks()
+        popup.focus_force()
+        popup.grab_set()
         self.wait_window(popup)
         return result.get('code') or 'en'
+
+    def _first_run_language_prompt(self):
+        if self._is_closing:
+            return
+        try:
+            self.deiconify()
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        code = self._ask_language_first_run()
+        config.set_ui_lang(code)
+        if code != get_lang():
+            self._apply_language(code)
 
     def _ui(self, fn, gen: int | None = None):
         if self._is_closing:
@@ -635,7 +645,7 @@ class ModernApp(ctk.CTk):
         # Right info
         right_info = ctk.CTkFrame(header, fg_color='transparent')
         right_info.pack(side='right', padx=20, fill='y')
-        ctk.CTkLabel(right_info, text='v2.5.0  |  by ALOS',
+        ctk.CTkLabel(right_info, text='v2.5.1  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right')
         self._theme_btn = ctk.CTkButton(
@@ -1172,7 +1182,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.5.0',
+        ctk.CTkLabel(ver_badge, text='v2.5.1',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
