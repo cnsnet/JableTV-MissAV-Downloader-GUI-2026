@@ -304,6 +304,20 @@ class M3U8Crawler:
             if self.is_url_vaildate():
                 if self._targetName:
                     self._targetName = re.sub(r'[^\w\-_\. ]', '', self._targetName)
+                    if len(self._dirName) > 80:
+                        self._dirName = self._dirName[:80]
+                        self._temp_folder = os.path.join(self._dest_folder, self._dirName)
+                    if not self._targetName.strip():
+                        self._targetName = self._dirName
+                    LIMIT = 255
+                    reserve = len(self._dest_folder) + len(os.sep) + len('.mp4.part')
+                    max_len = LIMIT - reserve
+                    if max_len < 20:
+                        max_len = 20
+                    if len(self._targetName) > max_len:
+                        uid = re.sub(r'[^\w]', '', self._dirName)[-8:]
+                        keep = max(8, max_len - len(uid) - 1)
+                        self._targetName = (self._targetName[:keep].rstrip() + '_' + uid)[:max_len].rstrip()
                 if not self.silence:
                     if self._targetName: print("檔案名稱: " + self._targetName, flush=True)
                     if self._dest_folder: print("儲存位置: " + self._dest_folder, flush=True)
@@ -662,9 +676,15 @@ class M3U8Crawler:
             if not self._cancel_job:
                 self._prepareCrawl()
             if not self._cancel_job and not self._pending_set:
-                self._mergeMp4Chunks()
+                merged = self._mergeMp4Chunks()
+                if not merged and not self._cancel_job:
+                    raise Exception("merge/publish failed")
+            elif not self._cancel_job:
+                raise Exception("download incomplete")
         else:
             print("檔案已存在!!", flush=True)
+
+        return not self._cancel_job
 
     def cancel_download(self):
         print("\n取消下載....", flush=True)

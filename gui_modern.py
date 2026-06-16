@@ -195,7 +195,9 @@ class DownloadManager:
             name = job.target_name() or ''
             self._set_state(url, '下載中', name=name)
             job._progress_callback = lambda d, t, s: self._on_progress(url, d, t, s)
-            job.start_download()
+            ok = job.start_download()
+            if ok is False and not job._cancel_job:
+                raise Exception(T('parse_failed_short'))
             with self._lock:
                 self._active.pop(url, None)
             if job._cancel_job:
@@ -591,6 +593,7 @@ class ModernApp(ctk.CTk):
             self._card_widgets = {}
             self._dl_rows = {}
             self._categories = []
+            self._selected_urls.clear()
             self._dl_empty_lbl = None
             self._videos = []
             self._browse_blocked = False
@@ -625,6 +628,7 @@ class ModernApp(ctk.CTk):
             self._cf_ua_var.set(snapshot['cf_ua'])
             self._refresh_cf_status()
             self._set_tab_index(snapshot['tab_idx'])
+            self._sel_lbl.configure(text='')
             self._rebuild_sidebar()
             self._load_categories()
         finally:
@@ -650,7 +654,7 @@ class ModernApp(ctk.CTk):
         # Right info
         right_info = ctk.CTkFrame(header, fg_color='transparent')
         right_info.pack(side='right', padx=20, fill='y')
-        ctk.CTkLabel(right_info, text='v2.5.3  |  by ALOS',
+        ctk.CTkLabel(right_info, text='v2.5.4  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right')
         self._theme_btn = ctk.CTkButton(
@@ -1209,7 +1213,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.5.3',
+        ctk.CTkLabel(ver_badge, text='v2.5.4',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -1684,6 +1688,8 @@ class ModernApp(ctk.CTk):
 
     def _is_listing_url(self, url: str) -> bool:
         """Check if URL is a JableTV, MissAV, or SupJav listing/category/actress page."""
+        if re.match(r'https://(?:www\.)?supjav\.com/(?:(?:zh|ja)/)?\d+\.html$', url):
+            return False
         return (bool(re.match(r'https://(?:www\.)?(?:jable\.tv|fs1\.app)/', url)) or
                 bool(re.match(r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/', url)) or
                 bool(re.match(r'https://(?:www\.)?supjav\.com/', url)))

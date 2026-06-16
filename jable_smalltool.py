@@ -49,7 +49,7 @@ except Exception:
 
 # ── Constants ────────────────────────────────────────────────────────
 APP_NAME = 'Jable_smalltool'
-APP_VERSION = '2.5.3'
+APP_VERSION = '2.5.4'
 _yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 DEFAULT_BASELINE_DATE = _yesterday.strftime('%Y-%m-%d')
 DEFAULT_BASELINE_DT = datetime(_yesterday.year, _yesterday.month, _yesterday.day, tzinfo=timezone.utc)
@@ -610,7 +610,11 @@ class SmallToolWorker:
                     self._progress = (done, total, speed, title)
 
             site_obj._progress_callback = _on_progress
-            site_obj.start_download()
+            ok = site_obj.start_download()
+            if ok is False and not getattr(site_obj, '_cancel_job', False):
+                self._log('  [ERR] download failed')
+                self._cleanup_temp(site_obj)
+                return
 
             if getattr(site_obj, '_cancel_job', False):
                 self._log('  [CANCELLED]')

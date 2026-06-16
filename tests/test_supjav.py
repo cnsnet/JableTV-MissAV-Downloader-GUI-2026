@@ -26,8 +26,20 @@ def _m3u8_stub():
     return mod
 
 
+def _customtkinter_stub():
+    mod = types.ModuleType('customtkinter')
+
+    class CTk:
+        pass
+
+    mod.CTk = CTk
+    mod.CTkLabel = CTk
+    return mod
+
+
 _stub_runtime_dependency('cloudscraper', _cloudscraper_stub)
 _stub_runtime_dependency('m3u8', _m3u8_stub)
+_stub_runtime_dependency('customtkinter', _customtkinter_stub)
 
 import M3U8Sites.M3U8Crawler as crawler_mod
 from bs4 import BeautifulSoup
@@ -45,8 +57,19 @@ from M3U8Sites.SiteSupJav import (
 
 def test_supjav_validate_url_is_anchored():
     assert SiteSupJav.validate_url('https://supjav.com/433866.html') == '433866'
+    assert SiteSupJav.validate_url('https://supjav.com/zh/12345.html') == '12345'
+    assert SiteSupJav.validate_url('https://supjav.com/ja/12345.html') == '12345'
     assert SiteSupJav.validate_url('https://supjav.com/433866.html/x') is None
     assert SiteSupJav.validate_url('https://jable.tv/videos/x/') is None
+
+
+def test_supjav_video_urls_are_not_listing_urls():
+    from gui_modern import ModernApp
+
+    assert ModernApp._is_listing_url(None, 'https://supjav.com/12345.html') is False
+    assert ModernApp._is_listing_url(None, 'https://supjav.com/zh/12345.html') is False
+    assert ModernApp._is_listing_url(None, 'https://supjav.com/ja/12345.html') is False
+    assert ModernApp._is_listing_url(None, 'https://supjav.com/zh/popular') is True
 
 
 def test_supjav_page_url():

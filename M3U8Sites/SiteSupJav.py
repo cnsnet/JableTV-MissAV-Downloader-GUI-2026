@@ -91,8 +91,8 @@ def _parse_videos(soup):
 
 
 class SiteSupJav(M3U8Crawler):
-    website_pattern = r'https://supjav\.com/\d+\.html$'
-    website_dirname_pattern = r'https://supjav\.com/(\d+)\.html$'
+    website_pattern = r'https://supjav\.com/(?:(?:zh|ja)/)?\d+\.html$'
+    website_dirname_pattern = r'https://supjav\.com/(?:(?:zh|ja)/)?(\d+)\.html$'
 
     def _transform_segment(self, data):
         return _strip_fake_header(data)
