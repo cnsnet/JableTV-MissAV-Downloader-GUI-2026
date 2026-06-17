@@ -90,3 +90,20 @@ def test_download_queue_csv_load_tolerates_missing_destination_column(tmp_path):
     assert restored.state == '未完成'
     assert restored.progress == 7
     assert restored.dest == ''
+
+
+def test_download_queue_csv_load_normalizes_active_states(tmp_path):
+    path = tmp_path / 'crashed_queue.csv'
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['狀態', '名稱', '進度', '速度', '網址', '目標'])
+        writer.writerow(['下載中', 'Active Example', '33%', '1 MB/s',
+                         'https://jable.tv/videos/active-001/', r'C:\Videos'])
+
+    mgr = DownloadManager()
+    mgr.load_csv(str(path))
+    restored = mgr.get_items()[0]
+
+    assert restored.state == '未完成'
+    assert restored.progress == 33
+    assert restored.dest == r'C:\Videos'

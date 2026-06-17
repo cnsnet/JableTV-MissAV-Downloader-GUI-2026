@@ -676,7 +676,19 @@ class M3U8Crawler:
                 return None
         return self._get_image_savename()
 
+    def cleanup_temp(self):
+        try:
+            temp = getattr(self, '_temp_folder', None)
+            dest = getattr(self, '_dest_folder', None)
+            if (temp and os.path.isdir(temp) and
+                    os.path.abspath(temp) != os.path.abspath(dest or '')):
+                shutil.rmtree(temp, ignore_errors=True)
+        except Exception:
+            pass
+
     def start_download(self):
+        if self._cancel_job:
+            return False
         self._cancel_job = False
         self._create_dest_folder()
         self.download_image()
@@ -696,7 +708,7 @@ class M3U8Crawler:
 
         return not self._cancel_job
 
-    def cancel_download(self):
+    def cancel_download(self, cleanup=True):
         print("\n取消下載....", flush=True)
         self._cancel_job = True
         if self._t2_executor:
@@ -711,6 +723,8 @@ class M3U8Crawler:
         if proc is not None:
             try: proc.kill()
             except Exception: pass
+        if cleanup:
+            self.cleanup_temp()
         print("\n下載已取消", flush=True)
 
     def begin_concurrent_download(self):

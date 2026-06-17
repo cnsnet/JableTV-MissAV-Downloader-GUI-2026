@@ -49,7 +49,7 @@ except Exception:
 
 # ── Constants ────────────────────────────────────────────────────────
 APP_NAME = 'Jable_smalltool'
-APP_VERSION = '2.5.5'
+APP_VERSION = '2.5.6'
 _yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 DEFAULT_BASELINE_DATE = _yesterday.strftime('%Y-%m-%d')
 DEFAULT_BASELINE_DT = datetime(_yesterday.year, _yesterday.month, _yesterday.day, tzinfo=timezone.utc)
@@ -94,12 +94,57 @@ SITES = {
     },
 }
 
-# State files live next to the exe for portability
 if getattr(sys, 'frozen', False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.path.join(APP_DIR, f'.{APP_NAME}')
+
+
+def _fallback_state_dir() -> str:
+    base = os.environ.get('APPDATA') or os.path.expanduser('~')
+    return os.path.join(base, 'JableTV Downloader', 'smalltool')
+
+
+def _state_dir_is_readable(path: str) -> bool:
+    try:
+        return os.path.isdir(path) and os.access(path, os.R_OK)
+    except Exception:
+        return False
+
+
+def _state_dir_is_writable(path: str) -> bool:
+    probe = os.path.join(path, f'.write_test_{os.getpid()}')
+    try:
+        os.makedirs(path, exist_ok=True)
+        with open(probe, 'w', encoding='utf-8') as f:
+            f.write('ok')
+        os.remove(probe)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(probe):
+                os.remove(probe)
+        except Exception:
+            pass
+        return False
+
+
+def _select_state_dir() -> str:
+    portable = os.path.join(APP_DIR, f'.{APP_NAME}')
+    try:
+        if _state_dir_is_readable(portable):
+            return portable
+        if _state_dir_is_writable(portable):
+            return portable
+    except Exception:
+        pass
+    try:
+        return _fallback_state_dir()
+    except Exception:
+        return portable
+
+
+STATE_DIR = _select_state_dir()
 CONFIG_PATH = os.path.join(STATE_DIR, 'config.json')
 SEEN_PATH = os.path.join(STATE_DIR, 'seen.json')
 
@@ -123,7 +168,10 @@ CHECK_OFF = '#2a2a48'
 
 # ── Persistence ──────────────────────────────────────────────────────
 def _ensure_state_dir() -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+    except Exception:
+        pass
 
 
 def _atomic_write(path: str, text: str) -> None:
@@ -186,6 +234,8 @@ class SmallToolWorker:
         self._progress = None  # (done, total, speed_bps, title) or None
         self._progress_lock = threading.Lock()
         self._scan_lock = threading.Lock()
+        self._active_site = None
+        self._active_site_lock = threading.Lock()
 
     def _set_status(self, key: str, color: str = TEXT_DIM):
         if self._status:
@@ -204,6 +254,15 @@ class SmallToolWorker:
 
     def stop(self):
         self._stop.set()
+
+    def cancel_active_download(self):
+        with self._active_site_lock:
+            site_obj = self._active_site
+        if site_obj and hasattr(site_obj, 'cancel_download'):
+            try:
+                site_obj.cancel_download()
+            except Exception:
+                pass
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -259,37 +318,69 @@ class SmallToolWorker:
             return None
         if now is None:
             now = datetime.now(timezone.utc)
+        text = rel_text.strip()
+
+        def _apply_delta(n: int, unit: str) -> Optional[datetime]:
+            if unit in ('秒', 'second'):
+                delta = timedelta(seconds=n)
+            elif unit in ('分鐘', '分', 'minute'):
+                delta = timedelta(minutes=n)
+            elif unit in ('小時', '時間', 'hour'):
+                delta = timedelta(hours=n)
+            elif unit in ('天', '日', 'day'):
+                delta = timedelta(days=n)
+            elif unit in ('星期', '週', '周', '週間', 'week'):
+                delta = timedelta(weeks=n)
+            elif unit in ('月', '個月', 'ヶ月', 'か月', 'カ月', 'month'):
+                delta = timedelta(days=n * 30)
+            elif unit in ('年', '個年', 'year'):
+                delta = timedelta(days=n * 365)
+            else:
+                return None
+            return now - delta
+
         m = re.match(
             r'\s*(\d+|[一二兩三四五六七八九十]+)'
             r'\s*(個)?\s*'
             r'(分鐘|小時|天|星期|週|周|個?月|個?年)\s*前',
-            rel_text,
+            text,
         )
-        if not m:
-            return None
-        num_raw = m.group(1)
-        if num_raw.isdigit():
-            n = int(num_raw)
-        else:
-            n = cls._parse_cn_number(num_raw)
-            if n is None:
-                return None
-        unit = m.group(3)
-        if unit == '分鐘':
-            delta = timedelta(minutes=n)
-        elif unit == '小時':
-            delta = timedelta(hours=n)
-        elif unit == '天':
-            delta = timedelta(days=n)
-        elif unit in ('星期', '週', '周'):
-            delta = timedelta(weeks=n)
-        elif unit in ('月', '個月'):
-            delta = timedelta(days=n * 30)
-        elif unit in ('年', '個年'):
-            delta = timedelta(days=n * 365)
-        else:
-            return None
-        return now - delta
+        if m:
+            num_raw = m.group(1)
+            if num_raw.isdigit():
+                n = int(num_raw)
+            else:
+                n = cls._parse_cn_number(num_raw)
+                if n is None:
+                    return None
+            return _apply_delta(n, m.group(3))
+
+        low = text.lower()
+        if low in ('just now', 'today'):
+            return now
+        if low == 'yesterday':
+            return now - timedelta(days=1)
+        if low == 'a minute ago':
+            return now - timedelta(minutes=1)
+        if low == 'an hour ago':
+            return now - timedelta(hours=1)
+        m = re.match(
+            r'\s*(\d+)\s*'
+            r'(second|minute|hour|day|week|month|year)s?\s+ago',
+            low,
+            re.I,
+        )
+        if m:
+            return _apply_delta(int(m.group(1)), m.group(2).lower())
+
+        if text == '今日':
+            return now
+        if text == '昨日':
+            return now - timedelta(days=1)
+        m = re.match(r'\s*(\d+)\s*(秒|分|時間|週間|日|ヶ月|か月|カ月|年)\s*前', text)
+        if m:
+            return _apply_delta(int(m.group(1)), m.group(2))
+        return None
 
     def _fetch_video_date(self, vurl: str) -> tuple[Optional[datetime], str]:
         """Fetch a video detail page and extract its post datetime (JableTV only)."""
@@ -610,7 +701,14 @@ class SmallToolWorker:
                     self._progress = (done, total, speed, title)
 
             site_obj._progress_callback = _on_progress
-            ok = site_obj.start_download()
+            with self._active_site_lock:
+                self._active_site = site_obj
+            try:
+                ok = site_obj.start_download()
+            finally:
+                with self._active_site_lock:
+                    if self._active_site is site_obj:
+                        self._active_site = None
             if ok is False and not getattr(site_obj, '_cancel_job', False):
                 self._log('  [ERR] download failed')
                 self._cleanup_temp(site_obj)
@@ -1173,6 +1271,7 @@ class SmallToolApp(tk.Tk):
 
     def _stop_worker(self):
         self._worker.stop()
+        self._worker.cancel_active_download()
         self._start_btn.configure(state='normal')
         self._stop_btn.configure(state='disabled')
         self._set_status_key('st_stopped', TEXT_DIM)
@@ -1334,6 +1433,7 @@ class SmallToolApp(tk.Tk):
         self._build_gen += 1
         self._save_selections_to_config()
         self._worker.stop()
+        self._worker.cancel_active_download()
         try:
             save_config(self._cfg)
         except Exception:

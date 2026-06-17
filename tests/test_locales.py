@@ -63,6 +63,17 @@ def test_locale_placeholder_parity():
             assert _placeholders(locales.STRINGS[lang][key]) == expected, key
 
 
+def test_add_to_queue_locale_key_present():
+    expected = {
+        'en': 'Add to Queue',
+        'zh': '加入清單',
+        'zh-Hans': '加入清单',
+        'ja': 'キューに追加',
+    }
+    for lang, text in expected.items():
+        assert locales.STRINGS[lang]['add_to_queue'] == text
+
+
 def test_set_lang_accepts_supported_and_falls_back_to_english():
     locales.set_lang('ja')
     assert locales.get_lang() == 'ja'

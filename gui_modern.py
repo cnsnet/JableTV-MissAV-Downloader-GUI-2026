@@ -95,6 +95,7 @@ class DownloadManager:
         self._lock = threading.RLock()
         self._max_concurrent = max_concurrent
         self._prep_sem = threading.Semaphore(1)
+        self._cancel_epoch = 0
 
     @property
     def max_concurrent(self) -> int:
@@ -128,6 +129,11 @@ class DownloadManager:
                 job.cancel_download()
             except Exception:
                 pass
+            if hasattr(job, 'cleanup_temp'):
+                try:
+                    job.cleanup_temp()
+                except Exception:
+                    pass
 
     def enqueue(self, url: str, dest: str):
         with self._lock:
@@ -141,15 +147,18 @@ class DownloadManager:
             if any(u == url for u, _ in self._pending):
                 return
             if len(self._active) < self._max_concurrent:
+                epoch = self._cancel_epoch
                 self._active[url] = None
                 threading.Thread(target=self._run, args=(url, dest),
+                                 kwargs={'epoch': epoch},
                                  daemon=True).start()
             else:
                 self._pending.append((url, dest))
                 self._set_state(url, '等待中')
 
-    def cancel_all(self):
+    def cancel_all(self, cleanup: bool = True):
         with self._lock:
+            self._cancel_epoch += 1
             for u, _ in self._pending:
                 self._set_state(u, '已取消')
             self._pending.clear()
@@ -157,9 +166,19 @@ class DownloadManager:
         for url, job in jobs:
             if job and hasattr(job, 'cancel_download'):
                 try:
-                    job.cancel_download()
+                    job.cancel_download(cleanup=cleanup)
+                except TypeError:
+                    try:
+                        job.cancel_download()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+                if cleanup and hasattr(job, 'cleanup_temp'):
+                    try:
+                        job.cleanup_temp()
+                    except Exception:
+                        pass
             self._set_state(url, '已取消')
         with self._lock:
             self._active.clear()
@@ -169,8 +188,11 @@ class DownloadManager:
         with self._lock:
             self._items.clear()
 
-    def _run(self, url: str, dest: str):
+    def _run(self, url: str, dest: str, epoch: int | None = None):
         self._set_state(url, '準備中')
+        if epoch is None:
+            with self._lock:
+                epoch = self._cancel_epoch
         try:
             self._prep_sem.acquire()
             try:
@@ -183,6 +205,19 @@ class DownloadManager:
                 return
             finally:
                 self._prep_sem.release()
+            with self._lock:
+                cancelled = (self._cancel_epoch != epoch)
+                if cancelled:
+                    self._active.pop(url, None)
+            if cancelled:
+                if job is not None:
+                    try:
+                        job._cancel_job = True
+                    except Exception:
+                        pass
+                self._set_state(url, '已取消')
+                self._try_next()
+                return
             if not job:
                 with self._lock:
                     self._active.pop(url, None)
@@ -201,10 +236,34 @@ class DownloadManager:
                 self._try_next()
                 return
             with self._lock:
-                self._active[url] = job
+                cancelled = (self._cancel_epoch != epoch)
+                if not cancelled:
+                    self._active[url] = job
+                else:
+                    self._active.pop(url, None)
+            if cancelled:
+                try:
+                    job._cancel_job = True
+                except Exception:
+                    pass
+                self._set_state(url, '已取消')
+                self._try_next()
+                return
             name = job.target_name() or ''
             self._set_state(url, '下載中', name=name)
             job._progress_callback = lambda d, t, s: self._on_progress(url, d, t, s)
+            with self._lock:
+                cancelled = (self._cancel_epoch != epoch)
+                if cancelled:
+                    self._active.pop(url, None)
+            if cancelled:
+                try:
+                    job._cancel_job = True
+                except Exception:
+                    pass
+                self._set_state(url, '已取消')
+                self._try_next()
+                return
             ok = job.start_download()
             if ok is False and not job._cancel_job:
                 raise Exception(T('parse_failed_short'))
@@ -226,8 +285,10 @@ class DownloadManager:
             if not self._pending or len(self._active) >= self._max_concurrent:
                 return
             url, dest = self._pending.pop(0)
+            epoch = self._cancel_epoch
             self._active[url] = None
-        threading.Thread(target=self._run, args=(url, dest), daemon=True).start()
+        threading.Thread(target=self._run, args=(url, dest),
+                         kwargs={'epoch': epoch}, daemon=True).start()
 
     def _set_state(self, url: str, state: str, name: str = '', progress: int = -1, error=None):
         with self._lock:
@@ -281,8 +342,11 @@ class DownloadManager:
             for row in csv.DictReader(f):
                 url = row.get('網址', '')
                 if url:
+                    state = row.get('狀態', '')
+                    if state in ('下載中', '準備中', '等待中'):
+                        state = '未完成'
                     item = self.add_item(
-                        url, row.get('名稱', ''), row.get('狀態', ''),
+                        url, row.get('名稱', ''), state,
                         row.get('目標', ''))
                     progress = (row.get('進度', '') or '').rstrip('%')
                     try:
@@ -686,7 +750,7 @@ class ModernApp(ctk.CTk):
         # Right info
         right_info = ctk.CTkFrame(header, fg_color='transparent')
         right_info.pack(side='right', padx=20, fill='y')
-        ctk.CTkLabel(right_info, text='v2.5.5  |  by ALOS',
+        ctk.CTkLabel(right_info, text='v2.5.6  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right')
         self._theme_btn = ctk.CTkButton(
@@ -840,7 +904,7 @@ class ModernApp(ctk.CTk):
                       fg_color=ACCENT,
                       hover_color=ACCENT_HOVER,
                       text_color=('#FFFFFF', '#FFFFFF')).pack(side='right', padx=4)
-        ctk.CTkButton(right, text=T('clear_list'), command=self._add_selected_to_queue,
+        ctk.CTkButton(right, text=T('add_to_queue'), command=self._add_selected_to_queue,
                       width=80, height=32, corner_radius=8,
                       fg_color='transparent', border_width=1, border_color=BORDER_HOVER,
                       hover_color=BG_CARD_HOVER,
@@ -1245,7 +1309,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.5.5',
+        ctk.CTkLabel(ver_badge, text='v2.5.6',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -1734,7 +1798,8 @@ class ModernApp(ctk.CTk):
         if self._is_listing_url(url):
             self._dl_url_var.set('')
             self._status_lbl.configure(text=T('crawling_url'))
-            threading.Thread(target=self._crawl_listing, args=(url,),
+            dest = self._dest_var.get() or 'download'
+            threading.Thread(target=self._crawl_listing, args=(url, dest),
                              daemon=True).start()
             return
         self._status_lbl.configure(text=T('url_not_supported'))
@@ -1748,9 +1813,8 @@ class ModernApp(ctk.CTk):
                 bool(re.match(r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/', url)) or
                 bool(re.match(r'https://(?:www\.)?supjav\.com/', url)))
 
-    def _crawl_listing(self, url: str):
+    def _crawl_listing(self, url: str, dest: str):
         """Crawl a listing URL across all pages; add every video to the queue."""
-        dest = self._dest_var.get() or 'download'
         gen = self._build_gen
         seen: set[str] = set()
         is_jable = bool(re.match(r'https://(?:www\.)?(?:jable\.tv|fs1\.app)/', url))
@@ -1821,7 +1885,8 @@ class ModernApp(ctk.CTk):
             elif self._is_listing_url(url):
                 self._dl_url_var.set('')
                 self._status_lbl.configure(text=T('crawling_url'))
-                threading.Thread(target=self._crawl_listing, args=(url,),
+                dest = self._dest_var.get() or 'download'
+                threading.Thread(target=self._crawl_listing, args=(url, dest),
                                  daemon=True).start()
                 return
         dest = self._dest_var.get() or 'download'
@@ -2171,7 +2236,7 @@ class ModernApp(ctk.CTk):
                 self._dlmgr.save_csv(CSV_PATH)
         except Exception:
             pass
-        self._dlmgr.cancel_all()
+        self._dlmgr.cancel_all(cleanup=False)
         self.destroy()
 
 
