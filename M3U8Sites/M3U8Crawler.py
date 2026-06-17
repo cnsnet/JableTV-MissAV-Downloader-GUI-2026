@@ -153,6 +153,10 @@ class _SpeedLimiter:
 
 speed_limiter = _SpeedLimiter()
 
+
+def _is_valid_ts_segment(data):
+    return bool(data and len(data) >= 188 and data[:1] == b'\x47')
+
 _FFMPEG_PATH = None
 _FFMPEG_RESOLVED = False
 
@@ -581,15 +585,19 @@ class M3U8Crawler:
 
         try:
             session = _get_session()
-            response = session.get(url, headers=self._m3u8_headers(), timeout=20)
+            response = session.get(url, headers=self._m3u8_headers(), timeout=25)
             if response.status_code != 200:
                 return False
             content_ts = response.content
+            if not content_ts:
+                return False
             content_ts = self._transform_segment(content_ts)
-            speed_limiter.acquire(len(content_ts))
             if self._key_content:
                 cipher = self._make_cipher(seq_num)
                 content_ts = cipher.decrypt(content_ts)
+            if not _is_valid_ts_segment(content_ts):
+                return False
+            speed_limiter.acquire(len(content_ts))
             with open(saveName, 'wb') as f:
                 f.write(content_ts)
             with self._speed_lock:
@@ -619,7 +627,7 @@ class M3U8Crawler:
         self._job_total = len(self._pending_set)
         print(f'共 {total} 片段，已完成 {total - self._job_total}，剩餘 {self._job_total}...', flush=True)
 
-        max_rounds = 5
+        max_rounds = 6
         for round_num in range(1, max_rounds + 1):
             if not self._pending_set or self._cancel_job:
                 break
@@ -633,6 +641,8 @@ class M3U8Crawler:
                 break
             if round_num < max_rounds:
                 print(f'\n重試第 {round_num} 次，剩餘 {still_pending} 片段...', flush=True)
+                if not self._cancel_job:
+                    time.sleep(min(1.5 * round_num, 6))
 
         self._t2_executor = None
         spent = time.time() - self._speed_start

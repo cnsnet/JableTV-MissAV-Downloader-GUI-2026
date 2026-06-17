@@ -28,6 +28,10 @@ def _ui_prefs_path():
     return os.path.join(os.path.dirname(_cf_store_path()), 'ui_prefs.json')
 
 
+def queue_csv_path():
+    return os.path.join(os.path.dirname(_ui_prefs_path()), 'download_queue.csv')
+
+
 def _load_prefs():
     try:
         with open(_ui_prefs_path(), 'r', encoding='utf-8') as f:

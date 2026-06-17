@@ -56,16 +56,16 @@ def _strip_fake_header(data):
     from the first valid MPEG-TS sync (0x47 on a 188-byte stride). Plain TS is returned unchanged."""
     if data[:1] == b'\x47':
         return data
-    limit = min(len(data) - 188 * 4, 8000)
+    limit = min(len(data) - 188 * 4 - 1, 8000)
     i = 0
     while 0 <= i <= limit:
         j = data.find(b'\x47', i)
         if j < 0 or j > limit:
             break
-        if data[j + 188] == 0x47 and data[j + 188 * 2] == 0x47 and data[j + 188 * 3] == 0x47 and data[j + 188 * 4] == 0x47:
+        if all(data[j + 188 * n] == 0x47 for n in range(5)):
             return data[j:]
         i = j + 1
-    return data
+    return b''
 
 
 def _parse_videos(soup):
@@ -124,7 +124,7 @@ class SiteSupJav(M3U8Crawler):
         self._targetName = html.unescape(title)
         self._imageUrl = None
         self._m3u8url = m3u8url
-        self._extra_headers = {}
+        self._extra_headers = {'Referer': 'https://supjav.com/'}
 
 
 class SupJavBrowser:

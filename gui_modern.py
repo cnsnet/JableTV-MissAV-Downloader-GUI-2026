@@ -8,6 +8,7 @@ import re
 import io
 import csv
 import time
+import shutil
 import threading
 import concurrent.futures
 import tkinter as tk
@@ -56,7 +57,7 @@ BORDER_CARD   = ('#E6E3DE', '#242329')
 
 DEFAULT_CONCURRENT = 2
 MAX_CONCURRENT = 10
-CSV_PATH = os.path.join(os.getcwd(), 'JableTV.csv')
+CSV_PATH = config.queue_csv_path()
 ERR_BLOCKED = '__cf_blocked__'
 
 SITES = {
@@ -68,15 +69,16 @@ SITES = {
 
 # ── Download Manager ────────────────────────────────────────────────
 class DownloadItem:
-    __slots__ = ('url', 'name', 'state', 'progress', 'speed', 'error')
+    __slots__ = ('url', 'name', 'state', 'progress', 'speed', 'error', 'dest')
 
-    def __init__(self, url: str, name: str = '', state: str = ''):
+    def __init__(self, url: str, name: str = '', state: str = '', dest: str = ''):
         self.url = url
         self.name = name or url.rstrip('/').split('/')[-1]
         self.state = state
         self.progress = 0
         self.speed = ''
         self.error = ''
+        self.dest = dest or ''
 
 
 class DownloadManager:
@@ -104,10 +106,13 @@ class DownloadManager:
         for _ in range(value):
             self._try_next()
 
-    def add_item(self, url: str, name: str = '', state: str = ''):
+    def add_item(self, url: str, name: str = '', state: str = '', dest: str = ''):
         with self._lock:
             if url not in self._items:
-                self._items[url] = DownloadItem(url, name, state)
+                self._items[url] = DownloadItem(url, name, state, dest)
+            elif dest:
+                self._items[url].dest = dest
+            return self._items[url]
 
     def get_items(self) -> list[DownloadItem]:
         with self._lock:
@@ -126,6 +131,11 @@ class DownloadManager:
 
     def enqueue(self, url: str, dest: str):
         with self._lock:
+            item = self._items.get(url)
+            if item:
+                item.dest = dest or item.dest
+            else:
+                self._items[url] = DownloadItem(url, dest=dest)
             if url in self._active:
                 return
             if any(u == url for u, _ in self._pending):
@@ -250,13 +260,16 @@ class DownloadManager:
     def save_csv(self, path: str):
         with self._lock:
             items = list(self._items.values())
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['狀態', '名稱', '進度', '速度', '網址'])
+            w.writerow(['狀態', '名稱', '進度', '速度', '網址', '目標'])
             for item in items:
                 w.writerow([item.state, item.name, f'{item.progress}%',
-                            item.speed, item.url])
+                            item.speed, item.url, item.dest])
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -268,7 +281,15 @@ class DownloadManager:
             for row in csv.DictReader(f):
                 url = row.get('網址', '')
                 if url:
-                    self.add_item(url, row.get('名稱', ''), row.get('狀態', ''))
+                    item = self.add_item(
+                        url, row.get('名稱', ''), row.get('狀態', ''),
+                        row.get('目標', ''))
+                    progress = (row.get('進度', '') or '').rstrip('%')
+                    try:
+                        item.progress = int(float(progress))
+                    except (TypeError, ValueError):
+                        pass
+                    item.speed = row.get('速度', '') or ''
 
     @property
     def active_count(self) -> int:
@@ -386,9 +407,20 @@ class ModernApp(ctk.CTk):
         self._dl_empty_lbl = None
         self._thumb_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
         self._speed_mbps = 0.0
+        self._download_autosave_ticks = 0
+        self._last_download_save_sig = None
 
         # Download manager
         self._dlmgr = DownloadManager(max_concurrent=DEFAULT_CONCURRENT)
+        if not os.path.exists(CSV_PATH):
+            old_csv = os.path.join(os.getcwd(), 'JableTV.csv')
+            if (os.path.exists(old_csv) and
+                    os.path.abspath(old_csv) != os.path.abspath(CSV_PATH)):
+                try:
+                    os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+                    shutil.copy2(old_csv, CSV_PATH)
+                except Exception:
+                    pass
         self._dlmgr.load_csv(CSV_PATH)
 
         self._build_ui()
@@ -654,7 +686,7 @@ class ModernApp(ctk.CTk):
         # Right info
         right_info = ctk.CTkFrame(header, fg_color='transparent')
         right_info.pack(side='right', padx=20, fill='y')
-        ctk.CTkLabel(right_info, text='v2.5.4  |  by ALOS',
+        ctk.CTkLabel(right_info, text='v2.5.5  |  by ALOS',
                      font=('Consolas', 10),
                      text_color=TEXT_DIM).pack(side='right')
         self._theme_btn = ctk.CTkButton(
@@ -1213,7 +1245,7 @@ class ModernApp(ctk.CTk):
         # Version badge
         ver_badge = ctk.CTkFrame(about_body, fg_color=BG_BADGE, corner_radius=4)
         ver_badge.pack(anchor='w', pady=(10, 0))
-        ctk.CTkLabel(ver_badge, text='v2.5.4',
+        ctk.CTkLabel(ver_badge, text='v2.5.5',
                      text_color=TEXT_SEC,
                      font=('Consolas', 10)).pack(padx=10, pady=4)
 
@@ -1499,6 +1531,31 @@ class ModernApp(ctk.CTk):
         n = len(self._selected_urls)
         self._sel_lbl.configure(text=f'{n} {T("selected")}' if n else '')
 
+    def _set_card_selected(self, url: str, is_sel: bool):
+        w = self._card_widgets.get(url)
+        if not w:
+            return
+        try:
+            w['card'].configure(
+                fg_color=ACCENT_DIM if is_sel else BG_CARD,
+                border_width=2 if is_sel else 1,
+                border_color=ACCENT if is_sel else BORDER)
+            w['sel_btn'].configure(
+                text=('✓ ' + T('selected')) if is_sel else T('select'),
+                fg_color=ACCENT if is_sel else 'transparent',
+                border_width=0 if is_sel else 1,
+                hover_color=ACCENT_HOVER if is_sel else BG_CARD_HOVER,
+                text_color=('#FFFFFF', '#FFFFFF') if is_sel else TEXT_PRI)
+        except Exception:
+            pass
+
+    def _clear_selection_in_place(self):
+        selected = list(self._selected_urls)
+        self._selected_urls.clear()
+        for url in selected:
+            self._set_card_selected(url, False)
+        self._sel_lbl.configure(text='')
+
     def _goto_page(self, p: int):
         if p < 1:
             return
@@ -1523,7 +1580,7 @@ class ModernApp(ctk.CTk):
             url = v.get('url', '')
             if url:
                 self._selected_urls.add(url)
-        self._refresh_grid()
+                self._set_card_selected(url, True)
         n = len(self._selected_urls)
         self._sel_lbl.configure(text=f'{n} {T("selected")}' if n else '')
 
@@ -1644,25 +1701,22 @@ class ModernApp(ctk.CTk):
 
     # ── Download actions ─────────────────────────────────────────────
     def _add_selected_to_queue(self):
+        dest = self._dest_var.get() or 'download'
         for url in list(self._selected_urls):
             if M3U8Sites.VaildateUrl(url):
-                self._dlmgr.add_item(url, state='等待中')
+                self._dlmgr.add_item(url, state='等待中', dest=dest)
         n = len(self._selected_urls)
-        self._selected_urls.clear()
-        self._sel_lbl.configure(text='')
-        self._refresh_grid()
+        self._clear_selection_in_place()
         print(f'已加入 {n} 部到清單')
 
     def _download_selected(self):
         dest = self._dest_var.get() or 'download'
         for url in list(self._selected_urls):
             if M3U8Sites.VaildateUrl(url):
-                self._dlmgr.add_item(url, state='等待中')
+                self._dlmgr.add_item(url, state='等待中', dest=dest)
                 self._dlmgr.enqueue(url, dest)
         n = len(self._selected_urls)
-        self._selected_urls.clear()
-        self._sel_lbl.configure(text='')
-        self._refresh_grid()
+        self._clear_selection_in_place()
         print(f'{n} 部開始下載')
 
     def _download_url(self):
@@ -1672,7 +1726,7 @@ class ModernApp(ctk.CTk):
         # Direct video URL
         if M3U8Sites.VaildateUrl(url):
             dest = self._dest_var.get() or 'download'
-            self._dlmgr.add_item(url, state='等待中')
+            self._dlmgr.add_item(url, state='等待中', dest=dest)
             self._dlmgr.enqueue(url, dest)
             self._dl_url_var.set('')
             return
@@ -1742,7 +1796,7 @@ class ModernApp(ctk.CTk):
                     seen.add(video_url)
                     new_count += 1
                     name = v.get('title', '')
-                    self._dlmgr.add_item(video_url, name=name, state='等待中')
+                    self._dlmgr.add_item(video_url, name=name, state='等待中', dest=dest)
                     self._dlmgr.enqueue(video_url, dest)
 
             if new_count == 0:
@@ -1761,7 +1815,7 @@ class ModernApp(ctk.CTk):
         if url:
             if M3U8Sites.VaildateUrl(url):
                 dest = self._dest_var.get() or 'download'
-                self._dlmgr.add_item(url, state='等待中')
+                self._dlmgr.add_item(url, state='等待中', dest=dest)
                 self._dlmgr.enqueue(url, dest)
                 self._dl_url_var.set('')
             elif self._is_listing_url(url):
@@ -1777,7 +1831,7 @@ class ModernApp(ctk.CTk):
             # items still need enqueue() to (re)start them.
             if item.state in ('已下載', '下載中', '準備中'):
                 continue
-            self._dlmgr.enqueue(item.url, dest)
+            self._dlmgr.enqueue(item.url, item.dest or dest)
             count += 1
         if count:
             print(f'已加入 {count} 個下載任務')
@@ -1924,6 +1978,7 @@ class ModernApp(ctk.CTk):
             if done:
                 parts.append(f'{state_label("已下載")} {done}')
             self._status_lbl.configure(text='  |  '.join(parts) if parts else T('status_ready'))
+            self._autosave_downloads(items)
         except (tk.TclError, AttributeError):
             pass
         finally:
@@ -1932,6 +1987,20 @@ class ModernApp(ctk.CTk):
                     self.after(1000, self._refresh_downloads)
                 except tk.TclError:
                     pass
+
+    def _autosave_downloads(self, items: list[DownloadItem]):
+        self._download_autosave_ticks += 1
+        if self._download_autosave_ticks < 10:
+            return
+        self._download_autosave_ticks = 0
+        sig = tuple((i.url, i.name, i.state, i.progress, i.dest) for i in items)
+        if sig == self._last_download_save_sig:
+            return
+        try:
+            self._dlmgr.save_csv(CSV_PATH)
+            self._last_download_save_sig = sig
+        except Exception:
+            pass
 
     def _build_dl_row(self, item: DownloadItem) -> dict:
         """Build one download row once; return widget handles for in-place updates."""
@@ -2093,8 +2162,16 @@ class ModernApp(ctk.CTk):
             self._thumb_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+        try:
+            with self._dlmgr._lock:
+                for item in self._dlmgr._items.values():
+                    if item.state in ('準備中', '下載中', '等待中'):
+                        item.state = '未完成'
+                        item.speed = ''
+                self._dlmgr.save_csv(CSV_PATH)
+        except Exception:
+            pass
         self._dlmgr.cancel_all()
-        self._dlmgr.save_csv(CSV_PATH)
         self.destroy()
 
 

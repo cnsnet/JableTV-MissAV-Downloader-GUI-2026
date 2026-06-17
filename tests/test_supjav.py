@@ -143,7 +143,18 @@ def test_strip_fake_header_leaves_plain_ts_unchanged():
 
 def test_strip_fake_header_falls_back_when_no_valid_sync_run():
     data = b'\x89PNG\r\n\x1a\n' + b'\x00' * 300
-    assert _strip_fake_header(data) == data
+    assert _strip_fake_header(data) == b''
+
+
+def test_strip_fake_header_does_not_raise_on_short_input():
+    assert _strip_fake_header(b'\x89PNG') == b''
+
+
+def test_ts_segment_validation_rejects_empty_short_and_non_ts():
+    assert crawler_mod._is_valid_ts_segment(b'\x47' + b'\x00' * 187)
+    assert not crawler_mod._is_valid_ts_segment(b'')
+    assert not crawler_mod._is_valid_ts_segment(b'\x47' + b'\x00' * 186)
+    assert not crawler_mod._is_valid_ts_segment(b'<html>' + b'\x00' * 183)
 
 
 def test_getm3u8_playlist_handles_absolute_and_relative_variants(monkeypatch):
