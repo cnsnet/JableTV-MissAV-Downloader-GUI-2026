@@ -11,6 +11,7 @@ credentials.
 
 import logging
 import os
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -43,6 +44,38 @@ def _check_api_key(x_api_key: str | None):
         raise HTTPException(status_code=401, detail='invalid or missing X-API-Key')
 
 
+def _url_candidates(raw_url: str) -> list[str]:
+    """Site patterns were written for the desktop scraper's own canonical
+    URLs (some require a trailing slash, none expect a query string). A
+    human pasting or sharing a link from a phone browser is much less
+    tidy, so try a few normalized variants before giving up."""
+    url = raw_url.strip()
+    split = urlsplit(url)
+    bare = urlunsplit((split.scheme, split.netloc, split.path, '', ''))
+
+    candidates = [url, bare]
+    if bare.endswith('/'):
+        candidates.append(bare.rstrip('/'))
+    else:
+        candidates.append(bare + '/')
+
+    seen: set[str] = set()
+    ordered = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def _create_site(url: str):
+    for candidate in _url_candidates(url):
+        job = M3U8Sites.CreateSite(candidate)
+        if job is not None:
+            return job
+    return None
+
+
 @app.get('/health')
 def health():
     return {'ok': True}
@@ -57,7 +90,7 @@ def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
         raise HTTPException(status_code=400, detail='url is required')
 
     try:
-        job = M3U8Sites.CreateSite(url)
+        job = _create_site(url)
     except Exception as exc:
         logger.exception('CreateSite raised for %s', url)
         raise HTTPException(

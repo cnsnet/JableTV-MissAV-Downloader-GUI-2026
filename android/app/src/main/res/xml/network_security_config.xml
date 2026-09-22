@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The resolver base URL is user-configurable at runtime (Settings screen) and
+  currently runs over plain HTTP, not HTTPS. This app only ever talks to that
+  one self-hosted server, so cleartext is allowed app-wide rather than pinned
+  to today's hostname. Switch the resolver to HTTPS and drop this file once
+  it's fronted by TLS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

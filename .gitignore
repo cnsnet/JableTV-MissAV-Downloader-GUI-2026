@@ -26,3 +26,11 @@ CLAUDE.md
 .wrangler/
 *.log
 crash_log.txt
+
+# Android (gradle cache + machine-specific SDK path; wrapper jar/scripts ARE committed)
+android/.gradle/
+android/local.properties
+
+# locally built artifacts (large binaries, rebuild via packaging/ or Dockerfile.resolver)
+/UAV_Browser.exe
+/uav-resolver.tar.gz
