@@ -1,0 +1,31 @@
+# UAV Resolver — thin HTTP service that turns a JableTV/MissAV/SupJav/Hanime1
+# video page URL into a playable m3u8/direct URL and forwards it to the
+# remote download server. No ffmpeg, no GUI deps: it never touches video bytes.
+#
+# Multi-stage: pip/setuptools and build caches from the install step never
+# reach the final image (they added ~15-20MB for no runtime benefit).
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+COPY requirements-resolver.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements-resolver.txt
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /install /usr/local
+COPY src ./src
+
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1
+# Set at `docker run` time (or in docker-compose):
+#   RESOLVER_API_KEY   - shared secret the Android client must send as X-API-Key
+#   REMOTE_DL_BASE_URL - e.g. http://s.cnsc.top:38090
+#   REMOTE_DL_USERNAME / REMOTE_DL_PASSWORD - remote download server login
+
+EXPOSE 8060
+CMD ["uvicorn", "uav_downloader.resolver.app:app", "--host", "0.0.0.0", "--port", "8060"]

@@ -1,0 +1,13 @@
+# m3u8-resolver service deps only — same scraping stack as requirements-docker.txt,
+# plus the tiny HTTP layer that exposes it. No ffmpeg/Pillow/customtkinter needed:
+# this service never downloads or remuxes video, it only resolves a URL and
+# forwards it to the remote download server.
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+m3u8>=3.0.0
+pycryptodome>=3.15.0
+cloudscraper>=1.2.68
+curl_cffi>=0.7.0
+certifi
+fastapi>=0.110
+uvicorn>=0.29

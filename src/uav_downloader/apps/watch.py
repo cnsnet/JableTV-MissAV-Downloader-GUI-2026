@@ -1650,6 +1650,8 @@ class SmallToolWorker:
                 return
             subtitle_mode = normalize_subtitle_mode(
                 self._subtitle_mode if subtitle_mode is None else subtitle_mode)
+            if getattr(site_obj, '_remote_delegated', False):
+                subtitle_mode = 'none'
             if subtitle_mode != 'none':
                 subtitle_started = time.monotonic()
                 last_stage = [None]

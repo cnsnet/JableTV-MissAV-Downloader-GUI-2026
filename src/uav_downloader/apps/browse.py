@@ -171,12 +171,12 @@ class _DownloadTask:
 
     __slots__ = (
         'url', 'dest', 'epoch', 'job', 'subtitle_mode',
-        'source_subtitle_evidence', 'cancelled',
+        'source_subtitle_evidence', 'cancelled', 'remote',
     )
 
     def __init__(
             self, url: str, dest: str, epoch: int,
-            source_subtitle_evidence=()):
+            source_subtitle_evidence=(), remote: bool = False):
         self.url = url
         self.dest = dest
         self.epoch = epoch
@@ -186,14 +186,16 @@ class _DownloadTask:
             normalize_source_subtitle_evidence(
                 source_subtitle_evidence))
         self.cancelled = threading.Event()
+        self.remote = remote
 
 
 class DownloadManager:
     """Thread-safe manager with separate download and subtitle queues."""
 
     def __init__(self, on_update=None, max_concurrent: int = DEFAULT_CONCURRENT,
-                 subtitle_mode_getter=None):
+                 subtitle_mode_getter=None, on_remote_delegated=None):
         self._on_update = on_update
+        self._on_remote_delegated = on_remote_delegated
         self._subtitle_mode_getter = subtitle_mode_getter or config.get_subtitle_pref
         self._pending: list[_DownloadTask] = []
         self._active: dict[str, _DownloadTask] = {}
@@ -308,7 +310,7 @@ class DownloadManager:
             cleanup_done.set()
         return True
 
-    def enqueue(self, url: str, dest: str):
+    def enqueue(self, url: str, dest: str, remote: bool = False):
         start_task = None
         with self._lock:
             if self._url_inflight_locked(url):
@@ -321,7 +323,7 @@ class DownloadManager:
                 item = self._items[url]
             task = _DownloadTask(
                 url, dest, self._cancel_epoch,
-                item.source_subtitle_evidence)
+                item.source_subtitle_evidence, remote=remote)
             if len(self._active) < self._max_concurrent:
                 self._active[url] = task
                 start_task = task
@@ -426,11 +428,20 @@ class DownloadManager:
                     pass
                 self._complete_download(task, '已取消')
                 return
-            ok = job.start_download()
+            ok = (job.start_remote_download() if task.remote
+                  else job.start_download())
             if ok is False and not job._cancel_job:
                 raise Exception(T('parse_failed_short'))
             if job._cancel_job or self._context_cancelled(task):
                 self._complete_download(task, '已取消')
+                return
+            if task.remote or getattr(job, '_remote_delegated', False):
+                self._complete_download(task, '已下載', progress=100)
+                if self._on_remote_delegated:
+                    try:
+                        self._on_remote_delegated()
+                    except Exception:
+                        pass
                 return
             mode = normalize_subtitle_mode(self._subtitle_mode_getter())
             if mode != 'none':
@@ -625,7 +636,7 @@ class DownloadManager:
                 item = self._items[task.url]
                 replacement = _DownloadTask(
                     task.url, restart[1], self._cancel_epoch,
-                    item.source_subtitle_evidence)
+                    item.source_subtitle_evidence, remote=task.remote)
                 self._pending.insert(0, replacement)
                 self._set_state(
                     task.url, '等待中', progress=0, error='')
@@ -983,8 +994,10 @@ class ModernApp(ctk.CTk):
         self._update_now_btn = None
 
         # Download manager
+        self._remote_toast = None
         self._dlmgr = DownloadManager(
-            max_concurrent=config.get_download_concurrency())
+            max_concurrent=config.get_download_concurrency(),
+            on_remote_delegated=self._show_remote_queue_toast)
         if not os.path.exists(CSV_PATH):
             old_csv = os.path.join(os.getcwd(), 'JableTV.csv')
             if (os.path.exists(old_csv) and
@@ -1111,6 +1124,57 @@ class ModernApp(ctk.CTk):
 
         try:
             self.after(0, _run)
+        except tk.TclError:
+            pass
+
+    def _show_remote_queue_toast(self, message: str | None = None):
+        """Thread-safe entry point: schedules a centered auto-dismiss toast."""
+        self._ui(lambda: self._render_remote_queue_toast(
+            message or T('remote_queue_added')))
+
+    def _render_remote_queue_toast(self, message: str):
+        try:
+            existing = getattr(self, '_remote_toast', None)
+            if existing is not None:
+                try:
+                    existing.destroy()
+                except tk.TclError:
+                    pass
+                self._remote_toast = None
+
+            popup = ctk.CTkToplevel(self)
+            self._remote_toast = popup
+            popup.overrideredirect(True)
+            try:
+                popup.attributes('-topmost', True)
+            except tk.TclError:
+                pass
+            popup.configure(fg_color=BG_CARD)
+
+            card = ctk.CTkFrame(
+                popup, fg_color=BG_CARD, corner_radius=CARD_RADIUS,
+                border_width=1, border_color=SUCCESS)
+            card.pack()
+            ctk.CTkLabel(
+                card, text=message, text_color=TEXT_PRI,
+                font=(ui_font(), 12, 'bold')).pack(padx=14, pady=8)
+
+            popup.update_idletasks()
+            w = card.winfo_reqwidth()
+            h = card.winfo_reqheight()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - h) // 2)
+            popup.geometry(f'{w}x{h}+{x}+{y}')
+
+            popup.after(2000, lambda: self._dismiss_remote_toast(popup))
+        except tk.TclError:
+            pass
+
+    def _dismiss_remote_toast(self, popup):
+        try:
+            if getattr(self, '_remote_toast', None) is popup:
+                self._remote_toast = None
+            popup.destroy()
         except tk.TclError:
             pass
 
@@ -1801,6 +1865,13 @@ class ModernApp(ctk.CTk):
                       width=128, height=34, corner_radius=CONTROL_RADIUS,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       text_color=WHITE, font=(ui_font(), 11, 'bold')).pack(
+                          side='right', padx=(8, 0))
+        ctk.CTkButton(actions, text=T('remote_download_selected'),
+                      command=self._download_selected_remote,
+                      width=104, height=34, corner_radius=CONTROL_RADIUS,
+                      fg_color='transparent', border_width=1, border_color=SUCCESS,
+                      hover_color=BG_CARD_HOVER,
+                      text_color=TEXT_PRI, font=(ui_font(), 11)).pack(
                           side='right', padx=(8, 0))
         ctk.CTkButton(actions, text=T('add_to_queue'), command=self._add_selected_to_queue,
                       width=104, height=34, corner_radius=CONTROL_RADIUS,
@@ -3391,6 +3462,20 @@ class ModernApp(ctk.CTk):
         n = len(self._selected_urls)
         self._clear_selection_in_place()
         print(f'{n} 部開始下載')
+
+    def _download_selected_remote(self):
+        dest = self._dest_var.get() or 'download'
+        for url in list(self._selected_urls):
+            if M3U8Sites.VaildateUrl(url):
+                self._dlmgr.add_item(
+                    url, state='等待中', dest=dest,
+                    source_subtitle_evidence=(
+                        self._selected_source_subtitle_evidence.get(
+                            url, ())))
+                self._dlmgr.enqueue(url, dest, remote=True)
+        n = len(self._selected_urls)
+        self._clear_selection_in_place()
+        print(f'{n} 部已提交遠端下載')
 
     def _download_url(self):
         url = self._dl_url_var.get().strip()

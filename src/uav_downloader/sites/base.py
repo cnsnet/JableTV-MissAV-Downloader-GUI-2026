@@ -16,6 +16,7 @@ except Exception:
 import urllib.request
 import m3u8
 from uav_downloader.core import config
+from uav_downloader.core import remote_downloader
 from Crypto.Cipher import AES
 from uav_downloader.core.config import headers
 import concurrent.futures
@@ -538,6 +539,7 @@ class M3U8Crawler:
         self._speed_start = 0.0
         self._last_error = None
         self._source_subtitle_evidence = ()
+        self._remote_delegated = False
         try:
             self._dirName = self.validate_url(url)
             if not self._dirName: return
@@ -576,6 +578,7 @@ class M3U8Crawler:
     def get_url_infos(self): raise Exception("Must implement get_url_infos()")
     def target_name(self): return self._targetName
     def dest_folder(self): return self._dest_folder
+    def raw_m3u8_url(self): return self._m3u8url
     def is_url_vaildate(self): return True if self._m3u8url else False
 
     def add_source_subtitle_evidence(self, evidence):
@@ -1013,6 +1016,25 @@ class M3U8Crawler:
             elif not self._cancel_job:
                 pending = len(self._pending_set)
                 raise DownloadIncompleteError(pending)
+        else:
+            print("檔案已存在!!", flush=True)
+
+        return not self._cancel_job
+
+    def start_remote_download(self):
+        """Hand the resolved m3u8 URL off to the remote download server
+        instead of running the local segment-download/merge pipeline."""
+        if self._cancel_job:
+            return False
+        self._cancel_job = False
+        self._create_dest_folder()
+        self.download_image()
+        if not self.is_target_video_exist():
+            output_name = self._targetName + '.mp4'
+            print(f'提交至遠端下載伺服器: {output_name}', flush=True)
+            remote_downloader.submit_task(self._m3u8url, output_name)
+            self._remote_delegated = True
+            print('已提交至遠端下載伺服器排隊', flush=True)
         else:
             print("檔案已存在!!", flush=True)
 
