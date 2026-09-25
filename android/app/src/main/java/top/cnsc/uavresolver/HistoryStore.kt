@@ -52,4 +52,8 @@ class HistoryStore(context: Context) {
         }
         file.writeText(arr.toString())
     }
+
+    fun clear() {
+        if (file.exists()) file.delete()
+    }
 }

@@ -34,3 +34,4 @@ android/local.properties
 # locally built artifacts (large binaries, rebuild via packaging/ or Dockerfile.resolver)
 /UAV_Browser.exe
 /uav-resolver.tar.gz
+/UAV_Resolver_Client.apk
