@@ -136,6 +136,33 @@ def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
     return {'ok': True, 'output_name': output_name, 'resolved_url': resolved_url}
 
 
+class DownloadRequest(BaseModel):
+    resolved_url: str
+    output_name: str | None = None
+
+
+@app.post('/api/download')
+def download(req: DownloadRequest, x_api_key: str | None = Header(default=None)):
+    """Submit an already-resolved URL straight to the remote download queue,
+    skipping the scrape step - for a client that already has a fresh
+    resolved_url from a prior /api/detail call on the same page and doesn't
+    need (or want) to re-parse it just to download."""
+    _check_api_key(x_api_key)
+
+    resolved_url = (req.resolved_url or '').strip()
+    if not resolved_url:
+        raise HTTPException(status_code=400, detail='resolved_url is required')
+    output_name = (req.output_name or '').strip() or 'video.mp4'
+
+    try:
+        remote_downloader.submit_task(resolved_url, output_name)
+    except remote_downloader.RemoteDownloadError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    logger.info('submitted (pre-resolved) -> %s', output_name)
+    return {'ok': True, 'output_name': output_name, 'resolved_url': resolved_url}
+
+
 @app.get('/api/detail')
 def detail(url: str, x_api_key: str | None = Header(default=None)):
     """Resolve a video page for in-app preview/playback only — unlike
@@ -169,9 +196,17 @@ def detail(url: str, x_api_key: str | None = Header(default=None)):
         raise HTTPException(
             status_code=422, detail='no playable URL found on that page')
 
+    title = job.target_name() or ''
+    # Titles are consistently "<code> <description>" (e.g. "CJOD-536 ハメ撮り
+    # 温泉 淫らな中出し旅行。…") — split on the first space so callers that
+    # just want the video code don't have to parse it out themselves.
+    video_id, _, description = title.partition(' ')
+
     return {
         'ok': True,
-        'title': job.target_name() or '',
+        'title': title,
+        'id': video_id,
+        'description': description,
         'thumbnail': getattr(job, '_imageUrl', None) or '',
         'resolved_url': resolved_url,
         'headers': getattr(job, '_extra_headers', {}) or {},

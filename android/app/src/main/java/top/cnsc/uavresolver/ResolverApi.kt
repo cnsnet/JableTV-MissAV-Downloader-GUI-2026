@@ -37,6 +37,8 @@ data class BrowseVideo(
 
 data class VideoDetail(
     val title: String,
+    val id: String,
+    val description: String,
     val thumbnail: String,
     val resolvedUrl: String,
     val headers: Map<String, String>,
@@ -80,6 +82,38 @@ class ResolverApi {
             }
         }
 
+    // Submits an already-resolved URL (e.g. from a prior detail() call)
+    // straight to the download queue, skipping the resolver's scrape step.
+    suspend fun download(baseUrl: String, apiKey: String, resolvedUrl: String, outputName: String): ResolveResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val requestJson = JSONObject()
+                    .put("resolved_url", resolvedUrl)
+                    .put("output_name", outputName)
+                    .toString()
+                val body = requestJson.toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("${baseUrl.trimEnd('/')}/api/download")
+                    .addHeader("X-API-Key", apiKey)
+                    .post(body)
+                    .build()
+                client.newCall(request).execute().use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val json = JSONObject(text)
+                        ResolveResult.Success(
+                            outputName = json.optString("output_name"),
+                            resolvedUrl = json.optString("resolved_url"),
+                        )
+                    } else {
+                        ResolveResult.Failure("HTTP ${resp.code}: ${extractDetail(text, resp.code)}")
+                    }
+                }
+            } catch (e: Exception) {
+                ResolveResult.Failure(e.message ?: "network error")
+            }
+        }
+
     suspend fun detail(baseUrl: String, apiKey: String, url: String): DetailResult =
         withContext(Dispatchers.IO) {
             try {
@@ -94,6 +128,8 @@ class ResolverApi {
                 DetailResult.Success(
                     VideoDetail(
                         title = json.optString("title"),
+                        id = json.optString("id"),
+                        description = json.optString("description"),
                         thumbnail = json.optString("thumbnail"),
                         resolvedUrl = json.optString("resolved_url"),
                         headers = headers,

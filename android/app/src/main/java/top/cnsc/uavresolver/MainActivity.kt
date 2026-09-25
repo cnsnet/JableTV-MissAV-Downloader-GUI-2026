@@ -260,28 +260,70 @@ fun HistoryScreen(
     var urlText by remember { mutableStateOf(initialUrl) }
     var statusText by remember { mutableStateOf<String?>(null) }
     var statusIsError by remember { mutableStateOf(false) }
-    var submitting by remember { mutableStateOf(false) }
+    var resolving by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
     var historyList by remember { mutableStateOf(history.all()) }
+    // Cached result of the last successful resolveOnly() call, keyed by the
+    // url it was resolved from. If download() is tapped for that same url,
+    // it reuses this instead of asking the resolver to re-scrape the page.
+    var resolvedDetail by remember { mutableStateOf<VideoDetail?>(null) }
+    var resolvedForUrl by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    fun submit() {
-        val u = urlText.trim()
+    fun checkUrlAndSettings(u: String): Boolean {
         if (u.isEmpty()) {
             statusText = "请输入或分享一个视频网址"
             statusIsError = true
-            return
+            return false
         }
         if (baseUrl.isEmpty() || apiKey.isEmpty()) {
             statusText = "请先在设置里填写解析服务地址和 API Key"
             statusIsError = true
             onNeedSettings()
-            return
+            return false
         }
-        submitting = true
+        return true
+    }
+
+    fun resolveOnly() {
+        val u = urlText.trim()
+        if (!checkUrlAndSettings(u)) return
+        resolving = true
         statusText = null
         scope.launch {
-            val result = api.resolve(baseUrl, apiKey, u)
-            submitting = false
+            when (val result = api.detail(baseUrl, apiKey, u)) {
+                is DetailResult.Success -> {
+                    statusIsError = false
+                    statusText = "解析成功：\n${result.detail.title}\n${result.detail.resolvedUrl}"
+                    resolvedDetail = result.detail
+                    resolvedForUrl = u
+                }
+                is DetailResult.Failure -> {
+                    statusIsError = true
+                    statusText = "解析失败：${result.message}"
+                    resolvedDetail = null
+                    resolvedForUrl = ""
+                }
+            }
+            resolving = false
+        }
+    }
+
+    fun download() {
+        val u = urlText.trim()
+        if (!checkUrlAndSettings(u)) return
+        downloading = true
+        statusText = null
+        scope.launch {
+            // Reuse the already-resolved URL from a prior "解析" tap on this
+            // same address instead of making the resolver scrape it again.
+            val cached = resolvedDetail
+            val result = if (cached != null && resolvedForUrl == u) {
+                api.download(baseUrl, apiKey, cached.resolvedUrl, "${cached.title.ifBlank { "video" }}.mp4")
+            } else {
+                api.resolve(baseUrl, apiKey, u)
+            }
+            downloading = false
             when (result) {
                 is ResolveResult.Success -> {
                     statusIsError = false
@@ -298,6 +340,8 @@ fun HistoryScreen(
                     )
                 }
             }
+            resolvedDetail = null
+            resolvedForUrl = ""
             historyList = history.all()
             urlText = ""
         }
@@ -312,7 +356,7 @@ fun HistoryScreen(
             IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "返回", modifier = Modifier.size(20.dp))
             }
-            Text("历史记录", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(start = 8.dp))
+            Text("解析下载", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(start = 8.dp))
         }
         OutlinedTextField(
             value = urlText,
@@ -323,13 +367,26 @@ fun HistoryScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
-        Button(
-            onClick = { submit() },
-            enabled = !submitting,
-            shape = RoundedCornerShape(8.dp),
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (submitting) "提交中..." else "解析并提交下载")
+            OutlinedButton(
+                onClick = { resolveOnly() },
+                enabled = !resolving && !downloading,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (resolving) "解析中..." else "解析")
+            }
+            Button(
+                onClick = { download() },
+                enabled = !resolving && !downloading,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (downloading) "下载中..." else "下载")
+            }
         }
 
         statusText?.let {

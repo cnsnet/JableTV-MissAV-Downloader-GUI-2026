@@ -293,7 +293,7 @@ fun BrowseScreen(
                         onClick = { menuExpanded = false; pickerMode = PickerMode.TAGS },
                     )
                     DropdownMenuItem(
-                        text = { Text("历史记录") },
+                        text = { Text("解析下载") },
                         onClick = { menuExpanded = false; onOpenHistory() },
                     )
                     DropdownMenuItem(
