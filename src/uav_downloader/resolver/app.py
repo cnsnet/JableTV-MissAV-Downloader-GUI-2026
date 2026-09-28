@@ -11,6 +11,7 @@ credentials.
 
 import hashlib
 import hmac
+import html
 import logging
 import os
 import re
@@ -26,10 +27,11 @@ from pydantic import BaseModel
 from uav_downloader import sites as M3U8Sites
 from uav_downloader.core import remote_downloader
 from uav_downloader.core.config import headers as _default_headers
-from uav_downloader.sites.base import MirrorsBlockedError
-from uav_downloader.sites.jabletv import JableTVBrowser
+from uav_downloader.sites.base import MirrorsBlockedError, fetch_with_mirrors
+from uav_downloader.sites.jabletv import JableTVBrowser, SiteJableTV
 from uav_downloader.sites.missav import MissAVBrowser, SiteMissAV
 from uav_downloader.i18n.locales import set_lang
+from uav_downloader.resolver import store
 
 # Category names come from the desktop app's i18n tables; the Android client
 # is Chinese-only, so fix the language once here rather than per request.
@@ -96,13 +98,26 @@ def health():
     return {'ok': True}
 
 
-@app.post('/api/resolve')
-def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
-    _check_api_key(x_api_key)
+def _video_info(url: str) -> dict:
+    """Title/id/description/thumbnail/resolved_url/headers for a video page.
 
-    url = (req.url or '').strip()
-    if not url:
-        raise HTTPException(status_code=400, detail='url is required')
+    Served from the DB while its resolved_url is still valid; otherwise the
+    page is scraped (Jable's Japanese titles swapped for MissAV's Chinese
+    ones) and the result stored for next time."""
+    try:
+        row = store.get(url)
+    except Exception:
+        logger.exception('store read failed for %s', url)
+        row = None
+    if store.has_valid_resolved_url(row):
+        return {
+            'title': row['title'],
+            'id': row['id'],
+            'description': row['description'],
+            'thumbnail': row['thumbnail'],
+            'resolved_url': row['resolved_url'],
+            'headers': store.row_headers(row),
+        }
 
     try:
         job = _create_site(url)
@@ -125,7 +140,42 @@ def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
         raise HTTPException(
             status_code=422, detail='no playable URL found on that page')
 
-    output_name = req.output_name or f'{job.target_name() or "video"}.mp4'
+    title = job.target_name() or ''
+    video_id, description = _split_title(title, url)
+    title_checked = False
+    if isinstance(job, SiteJableTV) and video_id and _KANA_RE.search(title):
+        title, title_checked = _jable_cn_title(video_id, title)
+        video_id, description = _split_title(title, url)
+
+    info = {
+        'title': title,
+        'id': video_id,
+        'description': description,
+        'thumbnail': getattr(job, '_imageUrl', None) or '',
+        'resolved_url': resolved_url,
+        'headers': getattr(job, '_extra_headers', {}) or {},
+    }
+    try:
+        store.save_detail(
+            url, video_id=video_id, title=title, description=description,
+            thumbnail=info['thumbnail'], resolved_url=resolved_url,
+            headers=info['headers'], title_checked=title_checked)
+    except Exception:
+        logger.exception('store write failed for %s', url)
+    return info
+
+
+@app.post('/api/resolve')
+def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+
+    url = (req.url or '').strip()
+    if not url:
+        raise HTTPException(status_code=400, detail='url is required')
+
+    info = _video_info(url)
+    resolved_url = info['resolved_url']
+    output_name = req.output_name or f'{info["title"] or "video"}.mp4'
 
     try:
         remote_downloader.submit_task(resolved_url, output_name)
@@ -175,42 +225,7 @@ def detail(url: str, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
 
-    try:
-        job = _create_site(url)
-    except Exception as exc:
-        logger.exception('CreateSite raised for %s', url)
-        raise HTTPException(
-            status_code=502, detail=f'resolve failed: {exc}') from exc
-
-    if job is None:
-        raise HTTPException(status_code=400, detail='unsupported url')
-    if not job.is_url_vaildate():
-        err = getattr(job, '_last_error', None)
-        if isinstance(err, MirrorsBlockedError):
-            raise HTTPException(status_code=502, detail=str(err))
-        raise HTTPException(
-            status_code=422, detail=f'parse failed: {err or "unknown error"}')
-
-    resolved_url = job.raw_m3u8_url() or getattr(job, '_direct_url', None)
-    if not resolved_url:
-        raise HTTPException(
-            status_code=422, detail='no playable URL found on that page')
-
-    title = job.target_name() or ''
-    # Titles are consistently "<code> <description>" (e.g. "CJOD-536 ハメ撮り
-    # 温泉 淫らな中出し旅行。…") — split on the first space so callers that
-    # just want the video code don't have to parse it out themselves.
-    video_id, _, description = title.partition(' ')
-
-    return {
-        'ok': True,
-        'title': title,
-        'id': video_id,
-        'description': description,
-        'thumbnail': getattr(job, '_imageUrl', None) or '',
-        'resolved_url': resolved_url,
-        'headers': getattr(job, '_extra_headers', {}) or {},
-    }
+    return {'ok': True, **_video_info(url)}
 
 
 # ── Browse: category/search listings for the Android UI ───────────────
@@ -314,6 +329,74 @@ def browse_categories(
     return {'categories': categories}
 
 
+# Both sites title listing cards as "<番号> <description>", e.g.
+# "SONE-001 エロめっちゃ…" / "FC2-PPV-1234567 …". Listing pages carry no
+# separate synopsis, so the description is the title with the code removed.
+_TITLE_CODE_RE = re.compile(r'^\s*([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)\s+(.*)$', re.S)
+
+
+def _split_title(title: str, url: str) -> tuple[str, str]:
+    match = _TITLE_CODE_RE.match(title or '')
+    if match and re.search(r'\d', match.group(1)):
+        return match.group(1).upper(), match.group(2).strip()
+    # No code prefix in the title: fall back to the URL slug.
+    slug = url.rstrip('/').rsplit('/', 1)[-1].split('?')[0]
+    code = slug.upper() if re.search(r'\d', slug) else ''
+    return code, (title or '').strip()
+
+
+# JableTV only has Chinese titles for part of its catalogue; untranslated
+# entries show the Japanese original even in Chinese mode. MissAV's /cn/
+# pages translate nearly everything, so /api/detail looks those codes up
+# there once and keeps the outcome in the DB (a code's title never changes);
+# listings then pick the translated title up from the DB.
+_KANA_RE = re.compile(r'[぀-ヿ]')
+_OG_TITLE_RE = re.compile(r'og:title"\s+content="([^"]+)"')
+
+
+def _lookup_cn_title(code: str) -> str | None:
+    """MissAV's Chinese title for *code*; '' if MissAV has none, None if the
+    lookup failed transiently (Cloudflare/network) and should be retried."""
+    try:
+        resp, _host, reason = fetch_with_mirrors(
+            MissAVBrowser._get_scraper(), f'https://missav.ai/cn/{code.lower()}',
+            'missav', lambda r: getattr(r, 'status_code', 0) == 200
+            and 'og:title' in r.text, timeout=10)
+    except Exception:
+        logger.warning('missav title lookup failed for %s', code, exc_info=True)
+        return None
+    if reason == 'blocked':
+        return None
+
+    title = ''
+    if reason == 'ok':
+        match = _OG_TITLE_RE.search(resp.text)
+        if match:
+            title = html.unescape(match.group(1)).strip()
+    # Reject MissAV's generic "not found" page, and pages MissAV hasn't
+    # translated either. MissAV appends " - <actress>", which is often kana
+    # even on translated titles, so only the part before it is checked.
+    if (not title.upper().startswith(code.upper())
+            or _KANA_RE.search(title.rsplit(' - ', 1)[0])):
+        title = ''
+    return title
+
+
+def _jable_cn_title(code: str, title: str) -> tuple[str, bool]:
+    """(title to use, whether the MissAV lookup is settled for this code)."""
+    try:
+        known = store.translated_title_for('jabletv', code)
+    except Exception:
+        logger.exception('store read failed for %s', code)
+        known = None
+    if known is not None:
+        return known or title, True
+    cn_title = _lookup_cn_title(code)
+    if cn_title is None:
+        return title, False
+    return cn_title or title, True
+
+
 def _fetch_listing(site: str, url: str) -> dict:
     browser = _get_browser(site)
     try:
@@ -324,6 +407,23 @@ def _fetch_listing(site: str, url: str) -> dict:
         logger.exception('listing fetch failed for %s: %s', site, url)
         raise HTTPException(
             status_code=502, detail=f'listing fetch failed: {exc}') from exc
+    for video in videos:
+        video['id'], video['description'] = _split_title(
+            video.get('title', ''), video.get('url', ''))
+    # Record new videos, and prefer what the DB already knows (e.g. a Chinese
+    # title found by an earlier /api/detail) over the raw listing text.
+    try:
+        store.save_listing(site, videos)
+        known = store.get_many([v.get('url', '') for v in videos])
+    except Exception:
+        logger.exception('store update failed for %s listing', site)
+        known = {}
+    for video in videos:
+        row = known.get(video.get('url', ''))
+        if row and row['title']:
+            video['title'] = row['title']
+            video['id'] = row['id']
+            video['description'] = row['description']
     return {'videos': videos}
 
 

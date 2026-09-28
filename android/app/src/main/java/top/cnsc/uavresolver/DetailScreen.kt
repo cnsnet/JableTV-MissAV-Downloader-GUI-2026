@@ -91,8 +91,10 @@ fun VideoDetailDialog(
                 }
 
                 Column(modifier = Modifier.padding(16.dp)) {
+                    // /api/detail may swap an untranslated Japanese title for a
+                    // Chinese one, so prefer it once loaded.
                     Text(
-                        video.title,
+                        detail?.title?.ifBlank { null } ?: video.title,
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 3,

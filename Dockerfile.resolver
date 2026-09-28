@@ -21,7 +21,12 @@ COPY --from=builder /install /usr/local
 COPY src ./src
 
 ENV PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    RESOLVER_DB_PATH=/data/resolver.db
+# SQLite cache of titles / resolved URLs. Mount a volume here (-v uav-resolver-data:/data)
+# so it survives container rebuilds.
+RUN mkdir -p /data
+VOLUME /data
 # Set at `docker run` time (or in docker-compose):
 #   RESOLVER_API_KEY   - shared secret the Android client must send as X-API-Key
 #   REMOTE_DL_BASE_URL - e.g. http://s.cnsc.top:38090
