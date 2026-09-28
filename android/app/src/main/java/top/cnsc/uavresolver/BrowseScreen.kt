@@ -24,8 +24,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -167,24 +167,10 @@ fun BrowseScreen(
         if (urls.isEmpty()) return
         scope.launch {
             submitting = true
-            var ok = 0
-            var fail = 0
-            for (url in urls) {
-                when (val result = api.resolve(baseUrl, apiKey, url)) {
-                    is ResolveResult.Success -> {
-                        ok++
-                        history.add(HistoryEntry(url, result.outputName, true, "已提交", System.currentTimeMillis()))
-                    }
-                    is ResolveResult.Failure -> {
-                        fail++
-                        history.add(HistoryEntry(url, null, false, result.message, System.currentTimeMillis()))
-                    }
-                }
-            }
+            val msg = submitUrls(api, baseUrl, apiKey, history, urls)
             submitting = false
             selected = emptySet()
-            val msg = if (fail == 0) "已提交 $ok 个" else "已提交 $ok 个，失败 $fail 个"
-            onSubmitResult(msg, fail == 0)
+            onSubmitResult(msg.first, msg.second)
         }
     }
 
@@ -318,10 +304,10 @@ fun BrowseScreen(
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             state = gridState,
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 8.dp),
-            contentPadding = PaddingValues(4.dp),
+            // Edge-to-edge like the reference app: no side gutter, only a hairline
+            // gap between cards.
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(1.dp),
         ) {
             items(videos, key = { it.url }) { video ->
                 VideoCard(
@@ -369,22 +355,7 @@ fun BrowseScreen(
         }
 
         if (selected.isNotEmpty()) {
-            Surface(
-                tonalElevation = 4.dp,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("已选 ${selected.size} 个", modifier = Modifier.weight(1f))
-                    Button(onClick = { submitSelected() }, enabled = !submitting) {
-                        Text(if (submitting) "提交中..." else "下载选中")
-                    }
-                }
-            }
+            SelectionBar(count = selected.size, submitting = submitting, onSubmit = { submitSelected() })
         }
     }
 
@@ -441,6 +412,48 @@ fun BrowseScreen(
 }
 
 @Composable
+fun SelectionBar(count: Int, submitting: Boolean, onSubmit: () -> Unit) {
+    Surface(
+        tonalElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("已选 $count 个", modifier = Modifier.weight(1f))
+            Button(onClick = onSubmit, enabled = !submitting) {
+                Text(if (submitting) "提交中..." else "下载选中")
+            }
+        }
+    }
+}
+
+/** Submits each url for remote download; returns the summary message and whether all succeeded. */
+suspend fun submitUrls(
+    api: ResolverApi, baseUrl: String, apiKey: String, history: HistoryStore, urls: List<String>,
+): Pair<String, Boolean> {
+    var ok = 0
+    var fail = 0
+    for (url in urls) {
+        when (val result = api.resolve(baseUrl, apiKey, url)) {
+            is ResolveResult.Success -> {
+                ok++
+                history.add(HistoryEntry(url, result.outputName, true, "已提交", System.currentTimeMillis()))
+            }
+            is ResolveResult.Failure -> {
+                fail++
+                history.add(HistoryEntry(url, null, false, result.message, System.currentTimeMillis()))
+            }
+        }
+    }
+    val msg = if (fail == 0) "已提交 $ok 个" else "已提交 $ok 个，失败 $fail 个"
+    return msg to (fail == 0)
+}
+
+@Composable
 private fun SearchBarButton(text: String, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
@@ -460,7 +473,7 @@ private fun SearchBarButton(text: String, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun VideoCard(
+fun VideoCard(
     video: BrowseVideo,
     thumbUrl: String,
     isSelected: Boolean,
@@ -468,11 +481,12 @@ private fun VideoCard(
     onLongPress: () -> Unit,
 ) {
     Card(
+        shape = RectangleShape,
         modifier = Modifier
-            .padding(4.dp)
+            .padding(1.dp)
             .then(
                 if (isSelected) {
-                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RectangleShape)
                 } else {
                     Modifier
                 },
@@ -487,8 +501,7 @@ private fun VideoCard(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                        .aspectRatio(16f / 9f),
                 )
                 if (video.duration.isNotEmpty()) {
                     Text(

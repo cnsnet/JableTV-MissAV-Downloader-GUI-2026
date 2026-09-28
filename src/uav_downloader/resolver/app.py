@@ -397,10 +397,10 @@ def _jable_cn_title(code: str, title: str) -> tuple[str, bool]:
     return cn_title or title, True
 
 
-def _fetch_listing(site: str, url: str) -> dict:
+def _fetch_listing(site: str, url: str, related: bool = False) -> dict:
     browser = _get_browser(site)
     try:
-        videos = browser.fetch_page(url)
+        videos = browser.fetch_related(url) if related else browser.fetch_page(url)
     except MirrorsBlockedError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
@@ -519,10 +519,10 @@ def browse_related(
     _check_api_key(x_api_key)
     _get_browser(site)
 
+    if site == 'jabletv':
+        # Jable renders its "猜你喜歡" block straight into the video page.
+        return _fetch_listing(site, url, related=True)
     if site != 'missav':
-        # Only MissAV has a recommendation engine behind it; other sites
-        # have no server-side equivalent, so just report an empty list
-        # rather than a hard error the client would have to special-case.
         return {'videos': []}
 
     item_id = _missav_item_id(url)

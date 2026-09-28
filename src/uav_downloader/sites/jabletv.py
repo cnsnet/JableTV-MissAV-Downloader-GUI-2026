@@ -356,23 +356,59 @@ class JableTVBrowser:
             soup = BeautifulSoup(resp.content, 'html.parser')
             divlist = soup.find('div', id=lambda x: x and x.startswith('list_videos'))
             if divlist is None: return []
-            cards = divlist.select('div.video-img-box')
-            videos = []
-            for card in cards:
-                detail = card.select_one('div.detail')
-                if not detail or not detail.h6 or not detail.h6.a: continue
-                tag_a = detail.h6.a
-                img = card.select_one('img')
-                duration_span = card.select_one('span.label')
-                videos.append({
-                    'url': tag_a.get('href', ''),
-                    'title': str(tag_a.string or ''),
-                    'thumbnail': img.get('data-src', '') if img else '',
-                    'duration': duration_span.string if duration_span else '',
-                })
-            return videos
+            return cls._parse_cards(divlist)
         except Exception:
             return []
+
+    @classmethod
+    def fetch_related(cls, url):
+        """Return the "猜你喜歡" recommendations from a video page. They're
+        rendered server-side as the page's only <section> holding video cards."""
+        def _validate(resp):
+            return 'og:title' in resp.text
+        scr = cls._get_scraper()
+        _apply_jable_lang(scr)
+        resp, host, reason = fetch_with_mirrors(scr, url, 'jable', _validate)
+        if reason != 'ok':
+            if reason == 'blocked':
+                raise MirrorsBlockedError(url)
+            return []
+        try:
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            for section in soup.find_all('section'):
+                if section.select_one('div.video-img-box'):
+                    videos = cls._parse_cards(section)
+                    for v in videos:
+                        v['url'] = cls._canonical_video_url(v['url'])
+                    return videos
+            return []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _canonical_video_url(href):
+        # Recommendation links carry a tracking segment (/s0/videos/...) and
+        # come back on whichever mirror served the page; SiteJableTV only
+        # matches the plain jable.tv form.
+        m = re.match(r'https?://[^/]+/(?:s\d+/)?videos/([^/?#]+)', href)
+        return f'https://jable.tv/videos/{m.group(1)}/' if m else href
+
+    @classmethod
+    def _parse_cards(cls, container):
+        videos = []
+        for card in container.select('div.video-img-box'):
+            detail = card.select_one('div.detail')
+            if not detail or not detail.h6 or not detail.h6.a: continue
+            tag_a = detail.h6.a
+            img = card.select_one('img')
+            duration_span = card.select_one('span.label')
+            videos.append({
+                'url': tag_a.get('href', ''),
+                'title': str(tag_a.string or ''),
+                'thumbnail': img.get('data-src', '') if img else '',
+                'duration': duration_span.string if duration_span else '',
+            })
+        return videos
 
     @classmethod
     def fetch_sidebar_tags(cls):

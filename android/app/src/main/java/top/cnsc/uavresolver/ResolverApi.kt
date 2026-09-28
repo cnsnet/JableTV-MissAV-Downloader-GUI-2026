@@ -181,6 +181,15 @@ class ResolverApi {
         parseVideos(executeGet(url, apiKey))
     }
 
+    suspend fun related(
+        baseUrl: String, apiKey: String, site: String, videoUrl: String,
+    ): List<BrowseVideo> = withContext(Dispatchers.IO) {
+        val url = "${baseUrl.trimEnd('/')}/api/browse/$site/related".toHttpUrl().newBuilder()
+            .addQueryParameter("url", videoUrl)
+            .build()
+        parseVideos(executeGet(url, apiKey))
+    }
+
     fun thumbUrl(baseUrl: String, apiKey: String, originalUrl: String): String {
         val encodedUrl = URLEncoder.encode(originalUrl, "UTF-8")
         val encodedKey = URLEncoder.encode(apiKey, "UTF-8")
