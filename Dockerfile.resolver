@@ -31,6 +31,10 @@ VOLUME /data
 #   RESOLVER_API_KEY   - shared secret the Android client must send as X-API-Key
 #   REMOTE_DL_BASE_URL - e.g. http://s.cnsc.top:38090
 #   REMOTE_DL_USERNAME / REMOTE_DL_PASSWORD - remote download server login
+# Optional — background detail prefetch for videos returned by list endpoints:
+#   RESOLVER_PREFETCH=0                  - turn it off (default on)
+#   RESOLVER_PREFETCH_DELAY_MIN / _MAX   - random gap between fetches, seconds (default 3 / 8)
+#   RESOLVER_PREFETCH_QUEUE              - max pending URLs, oldest dropped first (default 300)
 
 EXPOSE 8060
 CMD ["uvicorn", "uav_downloader.resolver.app:app", "--host", "0.0.0.0", "--port", "8060"]

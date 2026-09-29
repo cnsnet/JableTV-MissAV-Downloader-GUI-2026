@@ -32,6 +32,7 @@ from uav_downloader.sites.jabletv import JableTVBrowser, SiteJableTV
 from uav_downloader.sites.missav import MissAVBrowser, SiteMissAV
 from uav_downloader.i18n.locales import set_lang
 from uav_downloader.resolver import store
+from uav_downloader.resolver.prefetch import Prefetcher
 
 # Category names come from the desktop app's i18n tables; the Android client
 # is Chinese-only, so fix the language once here rather than per request.
@@ -165,6 +166,16 @@ def _video_info(url: str) -> dict:
     return info
 
 
+def _needs_detail(url: str) -> bool:
+    # Only pages never scraped; an expired Jable URL is left for /api/detail
+    # to refresh on demand rather than costing a background request.
+    return not store.has_detail(store.get(url))
+
+
+# Listings queue their videos here so /api/detail usually hits the DB.
+_prefetcher = Prefetcher(_video_info, _needs_detail)
+
+
 @app.post('/api/resolve')
 def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
     _check_api_key(x_api_key)
@@ -173,6 +184,7 @@ def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
 
+    _prefetcher.user_activity()
     info = _video_info(url)
     resolved_url = info['resolved_url']
     output_name = req.output_name or f'{info["title"] or "video"}.mp4'
@@ -225,6 +237,7 @@ def detail(url: str, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
 
+    _prefetcher.user_activity()
     return {'ok': True, **_video_info(url)}
 
 
@@ -398,6 +411,7 @@ def _jable_cn_title(code: str, title: str) -> tuple[str, bool]:
 
 
 def _fetch_listing(site: str, url: str, related: bool = False) -> dict:
+    _prefetcher.user_activity()
     browser = _get_browser(site)
     try:
         videos = browser.fetch_related(url) if related else browser.fetch_page(url)
@@ -407,9 +421,16 @@ def _fetch_listing(site: str, url: str, related: bool = False) -> dict:
         logger.exception('listing fetch failed for %s: %s', site, url)
         raise HTTPException(
             status_code=502, detail=f'listing fetch failed: {exc}') from exc
+    return {'videos': _annotate_listing(site, videos)}
+
+
+def _annotate_listing(site: str, videos: list[dict]) -> list[dict]:
+    """Fill id/description for listing cards, record them in the DB and
+    apply what the DB already knows."""
     for video in videos:
-        video['id'], video['description'] = _split_title(
-            video.get('title', ''), video.get('url', ''))
+        if 'id' not in video or 'description' not in video:
+            video['id'], video['description'] = _split_title(
+                video.get('title', ''), video.get('url', ''))
     # Record new videos, and prefer what the DB already knows (e.g. a Chinese
     # title found by an earlier /api/detail) over the raw listing text.
     try:
@@ -424,7 +445,10 @@ def _fetch_listing(site: str, url: str, related: bool = False) -> dict:
             video['title'] = row['title']
             video['id'] = row['id']
             video['description'] = row['description']
-    return {'videos': videos}
+    _prefetcher.enqueue([
+        v['url'] for v in videos
+        if v.get('url') and not store.has_detail(known.get(v['url']))])
+    return videos
 
 
 @app.get('/api/browse/{site}/videos')
@@ -503,9 +527,12 @@ def _parse_recombee_batch(data) -> list[dict]:
         has_cn_sub = props.get('has_chinese_subtitle') is True
         id_part = f'{item_id.upper()}[中文字幕]' if has_cn_sub else item_id.upper()
         full_title = f'{id_part} {title}'.strip() if title else id_part
+        # "<code>[中文字幕] …" doesn't fit _split_title, so fill these here.
         videos.append({
             'url': f'https://missav.ai/cn/{item_id}',
+            'id': item_id.upper(),
             'title': full_title,
+            'description': title.strip(),
             'thumbnail': f'https://fourhoi.com/{item_id}/cover-t.jpg',
             'duration': '',
         })
@@ -554,7 +581,7 @@ def browse_related(
         logger.warning('recombee related fetch failed for %s: %s', item_id, exc)
         return {'videos': []}
 
-    return {'videos': _parse_recombee_batch(data)}
+    return {'videos': _annotate_listing(site, _parse_recombee_batch(data))}
 
 
 @app.get('/api/browse/thumb')

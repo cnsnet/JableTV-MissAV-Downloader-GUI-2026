@@ -139,6 +139,12 @@ def get(url: str) -> dict | None:
     return get_many([url]).get(url)
 
 
+def has_detail(row: dict | None) -> bool:
+    """Whether the page was scraped at least once (resolved_url may have
+    expired since). Listing-only rows have no resolved_url."""
+    return bool(row and row.get('resolved_url'))
+
+
 def has_valid_resolved_url(row: dict | None) -> bool:
     if not row or not row.get('resolved_url'):
         return False
