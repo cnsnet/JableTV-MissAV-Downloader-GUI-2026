@@ -142,15 +142,15 @@ def _video_info(url: str) -> dict:
             status_code=422, detail='no playable URL found on that page')
 
     title = job.target_name() or ''
-    video_id, description = _split_title(title, url)
+    code, description = _split_title(title, url)
     title_checked = False
-    if isinstance(job, SiteJableTV) and video_id and _KANA_RE.search(title):
-        title, title_checked = _jable_cn_title(video_id, title)
-        video_id, description = _split_title(title, url)
+    if isinstance(job, SiteJableTV) and code and _KANA_RE.search(title):
+        title, title_checked = _jable_cn_title(code, title)
+        _, description = _split_title(title, url)
 
     info = {
         'title': title,
-        'id': video_id,
+        'id': store.url_slug(url),
         'description': description,
         'thumbnail': getattr(job, '_imageUrl', None) or '',
         'resolved_url': resolved_url,
@@ -158,7 +158,7 @@ def _video_info(url: str) -> dict:
     }
     try:
         store.save_detail(
-            url, video_id=video_id, title=title, description=description,
+            url, title=title, description=description,
             thumbnail=info['thumbnail'], resolved_url=resolved_url,
             headers=info['headers'], title_checked=title_checked)
     except Exception:
@@ -430,8 +430,9 @@ def _annotate_listing(site: str, videos: list[dict]) -> list[dict]:
     """Fill id/description for listing cards, record them in the DB and
     apply what the DB already knows."""
     for video in videos:
-        if 'id' not in video or 'description' not in video:
-            video['id'], video['description'] = _split_title(
+        video['id'] = store.url_slug(video.get('url', ''))
+        if 'description' not in video:
+            _, video['description'] = _split_title(
                 video.get('title', ''), video.get('url', ''))
     # Record new videos, and prefer what the DB already knows (e.g. a Chinese
     # title found by an earlier /api/detail) over the raw listing text.
@@ -445,7 +446,6 @@ def _annotate_listing(site: str, videos: list[dict]) -> list[dict]:
         row = known.get(video.get('url', ''))
         if row and row['title']:
             video['title'] = row['title']
-            video['id'] = row['id']
             video['description'] = row['description']
     _prefetcher.enqueue([
         v['url'] for v in videos
@@ -476,7 +476,7 @@ _code_refreshed_lock = threading.Lock()
 
 
 def _refresh_code_search(site: str, code: str):
-    key = (site, code.upper())
+    key = (site, code.lower())
     with _code_refreshed_lock:
         last = _code_refreshed.get(key)
     if last is not None and time.monotonic() - last < _CODE_REFRESH_TTL:
@@ -586,10 +586,9 @@ def _parse_recombee_batch(data) -> list[dict]:
         has_cn_sub = props.get('has_chinese_subtitle') is True
         id_part = f'{item_id.upper()}[中文字幕]' if has_cn_sub else item_id.upper()
         full_title = f'{id_part} {title}'.strip() if title else id_part
-        # "<code>[中文字幕] …" doesn't fit _split_title, so fill these here.
+        # "<code>[中文字幕] …" doesn't fit _split_title, so fill this here.
         videos.append({
             'url': f'https://missav.ai/cn/{item_id}',
-            'id': item_id.upper(),
             'title': full_title,
             'description': title.strip(),
             'thumbnail': f'https://fourhoi.com/{item_id}/cover-t.jpg',

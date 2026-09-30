@@ -14,6 +14,10 @@ and only served while still valid. MissAV's URLs don't expire (NULL).
 Keyed by the page URL, not the video code: MissAV has several pages per code
 (uncensored-leak, chinese-subtitle, ...). URLs are normalised to the main
 domain first, so jable.tv / fs1.app mirror links share a row.
+
+id is the URL's last path segment, lower-cased (ipx-771,
+ipx-771-uncensored-leak), so every page has its own. It always starts with
+the video code, which is how code lookups find all pages of one code.
 """
 
 import json
@@ -56,6 +60,9 @@ CREATE TABLE IF NOT EXISTS videos (
 CREATE INDEX IF NOT EXISTS idx_videos_site_id ON videos (site, id);
 '''
 
+# PRAGMA user_version: 1 = id is the URL slug (was the upper-case code).
+_SCHEMA_VERSION = 1
+
 _init_lock = threading.Lock()
 _initialized = False
 
@@ -69,10 +76,25 @@ def _connect() -> sqlite3.Connection:
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute('PRAGMA journal_mode=WAL')
                     conn.executescript(_SCHEMA)
+                    _migrate(conn)
                 _initialized = True
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _migrate(conn: sqlite3.Connection):
+    version = conn.execute('PRAGMA user_version').fetchone()[0]
+    if version < 1:
+        rows = conn.execute('SELECT url FROM videos').fetchall()
+        conn.executemany('UPDATE videos SET id = ? WHERE url = ?',
+                         [(url_slug(url), url) for (url,) in rows])
+    conn.execute(f'PRAGMA user_version = {_SCHEMA_VERSION}')
+
+
+def url_slug(url: str) -> str:
+    """A page's id: the last path segment, lower-cased."""
+    return urlsplit((url or '').strip()).path.rstrip('/').rsplit('/', 1)[-1].lower()
 
 
 def normalize_url(url: str) -> tuple[str, str]:
@@ -102,7 +124,7 @@ def save_listing(site: str, videos: list[dict]):
         if not v.get('url'):
             continue
         url, _ = normalize_url(v['url'])
-        rows.append((url, site, v.get('id', ''), v.get('title', ''),
+        rows.append((url, site, url_slug(url), v.get('title', ''),
                      v.get('description', ''), v.get('thumbnail', ''), now, now))
     if not rows:
         return
@@ -159,7 +181,7 @@ def row_headers(row: dict) -> dict:
         return {}
 
 
-def save_detail(url: str, *, video_id: str, title: str, description: str,
+def save_detail(url: str, *, title: str, description: str,
                 thumbnail: str, resolved_url: str, headers: dict,
                 title_checked: bool):
     canonical, site = normalize_url(url)
@@ -181,30 +203,35 @@ def save_detail(url: str, *, video_id: str, title: str, description: str,
                    headers = excluded.headers,
                    title_checked = MAX(videos.title_checked, excluded.title_checked),
                    updated_at = excluded.updated_at''',
-            (canonical, site, video_id, title, description, thumbnail,
+            (canonical, site, url_slug(canonical), title, description, thumbnail,
              resolved_url, resolved_url_expiry(resolved_url),
              json.dumps(headers or {}), int(title_checked), now, now))
 
 
+# Ids only use [a-z0-9_-], so [code, code + '.') holds exactly code and
+# code-*; as one range it stays on the (site, id) index, unlike LIKE or OR.
+_CODE_RANGE = 'id >= ? AND id < ?'
+
+
 def find_by_code(site: str, code: str) -> list[dict]:
     """Rows for a video code, including variant pages whose id carries a
-    suffix (SONE-001-CHINESE-SUBTITLE, ...). Ids only use [A-Z0-9_-], so
-    [code, code + '.') holds exactly code and code-*; as one range it stays
-    on the (site, id) index, unlike LIKE or an OR."""
-    code = code.upper()
+    suffix (sone-001-chinese-subtitle, ...)."""
+    code = code.lower()
     with _connect() as conn:
         cur = conn.execute(
-            'SELECT * FROM videos WHERE site = ? AND id >= ? AND id < ?'
+            f'SELECT * FROM videos WHERE site = ? AND {_CODE_RANGE}'
             ' ORDER BY created_at, url',
             (site, code, code + '.'))
         return [dict(row) for row in cur]
 
 
-def translated_title_for(site: str, video_id: str) -> str | None:
-    """A Chinese title already found for this code on another row (e.g. the
-    same Jable video reached through a different URL), or None."""
+def translated_title_for(site: str, code: str) -> str | None:
+    """A Chinese title already found for this code on any of its pages (e.g.
+    ipx-771-c when resolving ipx-771), or None."""
+    code = code.lower()
     with _connect() as conn:
         row = conn.execute(
-            'SELECT title FROM videos WHERE site = ? AND id = ? AND title_checked = 1'
-            ' ORDER BY updated_at DESC LIMIT 1', (site, video_id)).fetchone()
+            f'SELECT title FROM videos WHERE site = ? AND {_CODE_RANGE}'
+            ' AND title_checked = 1 ORDER BY updated_at DESC LIMIT 1',
+            (site, code, code + '.')).fetchone()
     return row['title'] if row else None
