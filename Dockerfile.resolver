@@ -35,6 +35,7 @@ VOLUME /data
 #   RESOLVER_PREFETCH=0                  - turn it off (default on)
 #   RESOLVER_PREFETCH_DELAY_MIN / _MAX   - random gap between fetches, seconds (default 3 / 8)
 #   RESOLVER_PREFETCH_QUEUE              - max pending URLs, oldest dropped first (default 300)
+#   RESOLVER_CRAWL_LIMIT                 - new videos per POST /api/crawl seed (default 10000)
 
 EXPOSE 8060
 CMD ["uvicorn", "uav_downloader.resolver.app:app", "--host", "0.0.0.0", "--port", "8060"]

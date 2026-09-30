@@ -21,6 +21,11 @@ oldest entries are dropped.
 Besides page URLs the queue takes arbitrary jobs (enqueue_call), e.g. the
 site search that refreshes a code answered from the DB, so every background
 request shares the same pacing.
+
+A second, background queue (enqueue_background) holds long-running work such
+as the related-video crawl. It only runs while the main queue is empty, is not
+capped by RESOLVER_PREFETCH_QUEUE and survives a block (it just waits out the
+backoff): its owner bounds its size, and nothing would re-queue it.
 """
 
 import logging
@@ -57,6 +62,9 @@ class Prefetcher:
         self._queue: deque[str] = deque()
         self._queued: set[str] = set()
         self._calls: dict[str, Callable[[], object]] = {}
+        self._background: deque[str] = deque()
+        self._bg_queued: set[str] = set()
+        self._bg_calls: dict[str, Callable[[], object]] = {}
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self._last_user = 0.0
@@ -86,6 +94,39 @@ class Prefetcher:
             self._calls[key] = call
             self._wake()
 
+    def enqueue_background(self, key: str,
+                           call: Callable[[], object] | None = None) -> bool:
+        """Queue a page URL (*call* None) or a job at the back of the
+        background queue; False if it is already queued."""
+        if not ENABLED:
+            return False
+        with self._cond:
+            if key in self._queued or key in self._bg_queued:
+                return False
+            self._background.append(key)
+            self._bg_queued.add(key)
+            if call is not None:
+                self._bg_calls[key] = call
+            self._wake()
+            return True
+
+    def drop_background(self, predicate: Callable[[str], bool]) -> int:
+        """Remove pending background entries whose key matches."""
+        with self._cond:
+            keep = deque(k for k in self._background if not predicate(k))
+            dropped = len(self._background) - len(keep)
+            for key in self._background:
+                if predicate(key):
+                    self._bg_queued.discard(key)
+                    self._bg_calls.pop(key, None)
+            self._background = keep
+            return dropped
+
+    def pending(self) -> tuple[int, int]:
+        """(main, background) queue lengths."""
+        with self._cond:
+            return len(self._queue), len(self._background)
+
     def _push_front(self, key: str):
         if key in self._queued:
             self._queue.remove(key)
@@ -105,11 +146,15 @@ class Prefetcher:
 
     def _next(self) -> tuple[str, Callable[[], object] | None]:
         with self._cond:
-            while not self._queue:
+            while not self._queue and not self._background:
                 self._cond.wait()
-            key = self._queue.popleft()
-            self._queued.discard(key)
-            return key, self._calls.pop(key, None)
+            if self._queue:
+                key = self._queue.popleft()
+                self._queued.discard(key)
+                return key, self._calls.pop(key, None)
+            key = self._background.popleft()
+            self._bg_queued.discard(key)
+            return key, self._bg_calls.pop(key, None)
 
     def _clear(self) -> int:
         with self._cond:

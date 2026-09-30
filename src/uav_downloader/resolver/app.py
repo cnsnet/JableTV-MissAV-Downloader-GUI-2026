@@ -32,7 +32,7 @@ from uav_downloader.sites.jabletv import JableTVBrowser, SiteJableTV
 from uav_downloader.sites.missav import MissAVBrowser, SiteMissAV
 from uav_downloader.i18n.locales import set_lang
 from uav_downloader.resolver import store
-from uav_downloader.resolver.prefetch import Prefetcher
+from uav_downloader.resolver.prefetch import ENABLED as PREFETCH_ENABLED, Prefetcher
 
 # Category names come from the desktop app's i18n tables; the Android client
 # is Chinese-only, so fix the language once here rather than per request.
@@ -411,7 +411,7 @@ def _jable_cn_title(code: str, title: str) -> tuple[str, bool]:
 
 
 def _fetch_listing(site: str, url: str, related: bool = False,
-                   from_user: bool = True) -> dict:
+                   from_user: bool = True, prefetch: bool = True) -> dict:
     if from_user:
         _prefetcher.user_activity()
     browser = _get_browser(site)
@@ -423,12 +423,13 @@ def _fetch_listing(site: str, url: str, related: bool = False,
         logger.exception('listing fetch failed for %s: %s', site, url)
         raise HTTPException(
             status_code=502, detail=f'listing fetch failed: {exc}') from exc
-    return {'videos': _annotate_listing(site, videos)}
+    return {'videos': _annotate_listing(site, videos, prefetch)}
 
 
-def _annotate_listing(site: str, videos: list[dict]) -> list[dict]:
+def _annotate_listing(site: str, videos: list[dict],
+                      prefetch: bool = True) -> list[dict]:
     """Fill id/description for listing cards, record them in the DB and
-    apply what the DB already knows."""
+    apply what the DB already knows. *prefetch* queues their details."""
     for video in videos:
         video['id'] = store.url_slug(video.get('url', ''))
         if 'description' not in video:
@@ -447,9 +448,10 @@ def _annotate_listing(site: str, videos: list[dict]) -> list[dict]:
         if row and row['title']:
             video['title'] = row['title']
             video['description'] = row['description']
-    _prefetcher.enqueue([
-        v['url'] for v in videos
-        if v.get('url') and not store.has_detail(known.get(v['url']))])
+    if prefetch:
+        _prefetcher.enqueue([
+            v['url'] for v in videos
+            if v.get('url') and not store.has_detail(known.get(v['url']))])
     return videos
 
 
@@ -597,18 +599,16 @@ def _parse_recombee_batch(data) -> list[dict]:
     return videos
 
 
-@app.get('/api/browse/{site}/related')
-def browse_related(
-        site: str, url: str, count: int = 12,
-        x_api_key: str | None = Header(default=None)):
-    _check_api_key(x_api_key)
-    _get_browser(site)
-
+def _related_videos(site: str, url: str, count: int = 12,
+                    from_user: bool = True, prefetch: bool = True) -> list[dict]:
+    """Annotated related videos for a video page; raises HTTPException (5xx
+    when the fetch itself failed)."""
     if site == 'jabletv':
         # Jable renders its "猜你喜歡" block straight into the video page.
-        return _fetch_listing(site, url, related=True)
+        return _fetch_listing(site, url, related=True, from_user=from_user,
+                              prefetch=prefetch)['videos']
     if site != 'missav':
-        return {'videos': []}
+        return []
 
     item_id = _missav_item_id(url)
     if not item_id:
@@ -637,9 +637,148 @@ def browse_related(
         data = resp.json()
     except requests.RequestException as exc:
         logger.warning('recombee related fetch failed for %s: %s', item_id, exc)
-        return {'videos': []}
+        raise HTTPException(
+            status_code=502, detail=f'related fetch failed: {exc}') from exc
 
-    return {'videos': _annotate_listing(site, _parse_recombee_batch(data))}
+    return _annotate_listing(site, _parse_recombee_batch(data), prefetch)
+
+
+@app.get('/api/browse/{site}/related')
+def browse_related(
+        site: str, url: str, count: int = 12,
+        x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    _get_browser(site)
+    try:
+        return {'videos': _related_videos(site, url, count)}
+    except HTTPException as exc:
+        # A failed Recombee call has always meant "no recommendations" here.
+        if site == 'missav' and exc.status_code >= 500:
+            return {'videos': []}
+        raise
+
+
+# ── Related crawl ───────────────────────────────────────────────────────
+# Breadth-first walk over "related" from seed videos: every video found is
+# stored, has its detail queued unless the DB already has it, and has its own
+# related fetched in turn, until CRAWL_LIMIT details have been queued. All of it runs in the
+# prefetcher's background queue, so it shares its pacing/backoff and waits
+# whenever the user's own browsing has queued something.
+
+CRAWL_LIMIT = int(os.environ.get('RESOLVER_CRAWL_LIMIT', '10000'))
+_CRAWL_PREFIX = 'crawl:'
+
+
+class _Crawler:
+    def __init__(self):
+        self._lock = threading.Lock()
+        # Canonical URLs already visited this process, so the graph's many
+        # cycles (A related to B related to A) aren't walked twice.
+        self._seen: set[str] = set()
+        self._remaining = 0
+        self._found = 0
+
+    def add_seed(self, site: str, url: str, limit: int) -> bool:
+        """Start (or top up) the crawl from *url*: up to *limit* more detail
+        fetches from now on. False if its related are already queued."""
+        with self._lock:
+            self._remaining = limit
+            self._seen.add(store.normalize_url(url)[0])
+        if _needs_detail(url):
+            _prefetcher.enqueue_background(url)
+        return self._schedule(site, url)
+
+    def status(self) -> dict:
+        main, background = _prefetcher.pending()
+        with self._lock:
+            return {'found': self._found, 'remaining': self._remaining,
+                    'seen': len(self._seen), 'queued': main,
+                    'queued_background': background}
+
+    def _schedule(self, site: str, url: str) -> bool:
+        return _prefetcher.enqueue_background(
+            f'{_CRAWL_PREFIX}{url}', lambda: self._visit(site, url))
+
+    def _visit(self, site: str, url: str):
+        try:
+            videos = _related_videos(site, url, from_user=False, prefetch=False)
+        except HTTPException as exc:
+            if exc.status_code >= 500:
+                # Blocked/network: try this page again after the backoff
+                # rather than losing its branch (or, for a seed, the crawl).
+                self._schedule(site, url)
+            raise
+
+        # The listing rows were just saved, so "already in the DB" means a
+        # detail was scraped before: those skip the detail queue and don't
+        # count toward the limit, but their related are still walked.
+        urls = [v['url'] for v in videos if v.get('url')]
+        known = store.get_many(urls)
+        fresh, walk = [], []
+        with self._lock:
+            for new_url in urls:
+                key = store.normalize_url(new_url)[0]
+                if key in self._seen:
+                    continue
+                has_detail = store.has_detail(known.get(new_url))
+                if not has_detail:
+                    if self._remaining <= 0:
+                        continue
+                    self._remaining -= 1
+                    self._found += 1
+                    fresh.append(new_url)
+                self._seen.add(key)
+                walk.append(new_url)
+            done = self._remaining <= 0
+        for new_url in fresh:
+            _prefetcher.enqueue_background(new_url)
+        for new_url in walk:
+            self._schedule(site, new_url)
+
+        if done:
+            # Enough found: pending related fetches would only find more.
+            dropped = _prefetcher.drop_background(
+                lambda key: key.startswith(_CRAWL_PREFIX))
+            logger.info('crawl reached its limit (%d found); dropped %d pending'
+                        ' related fetches', self._found, dropped)
+
+
+_crawler = _Crawler()
+
+
+class CrawlRequest(BaseModel):
+    url: str
+    limit: int | None = None
+
+
+@app.post('/api/crawl')
+def crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
+    """Queue a seed video for the related crawl (see _Crawler)."""
+    _check_api_key(x_api_key)
+    url = (req.url or '').strip()
+    if not url:
+        raise HTTPException(status_code=400, detail='url is required')
+    if not PREFETCH_ENABLED:
+        raise HTTPException(status_code=409, detail='prefetch is disabled')
+    site = store.normalize_url(url)[1]
+    # MissAV only: its related come from Recombee, one light API call, while
+    # a Jable page would cost two page loads (related + detail) per video.
+    if site != 'missav':
+        raise HTTPException(status_code=400, detail='only MissAV urls are supported')
+    if not _missav_item_id(url):
+        raise HTTPException(
+            status_code=400, detail='could not extract item id from url')
+
+    limit = CRAWL_LIMIT if req.limit is None else max(0, req.limit)
+    seed_queued = _crawler.add_seed(site, url, limit)
+    logger.info('crawl seed %s (limit %d)', url, limit)
+    return {'ok': True, 'seed_queued': seed_queued, **_crawler.status()}
+
+
+@app.get('/api/crawl')
+def crawl_status(x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    return _crawler.status()
 
 
 @app.get('/api/browse/thumb')
