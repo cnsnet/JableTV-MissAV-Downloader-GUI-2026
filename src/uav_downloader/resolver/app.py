@@ -20,7 +20,7 @@ import time
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -99,6 +99,13 @@ def health():
     return {'ok': True}
 
 
+def _version_flags(row: dict | None) -> dict:
+    """has_chinese_subtitle/is_uncensored_leak of a stored row as JSON
+    booleans; null while not known (see store)."""
+    return {flag: None if not row or row.get(flag) is None else bool(row[flag])
+            for flag in store.VERSION_FLAGS}
+
+
 def _video_info(url: str) -> dict:
     """Title/id/description/thumbnail/resolved_url/headers for a video page.
 
@@ -118,6 +125,7 @@ def _video_info(url: str) -> dict:
             'thumbnail': row['thumbnail'],
             'resolved_url': row['resolved_url'],
             'headers': store.row_headers(row),
+            **_version_flags(row),
         }
 
     try:
@@ -148,6 +156,9 @@ def _video_info(url: str) -> dict:
         title, title_checked = _jable_cn_title(code, title)
         _, description = _split_title(title, url)
 
+    # MissAV pages only; None when the page didn't show them.
+    flags = getattr(job, '_version_flags', None)
+    cn_sub, uncensored = flags if flags else (None, None)
     info = {
         'title': title,
         'id': store.url_slug(url),
@@ -160,10 +171,24 @@ def _video_info(url: str) -> dict:
         store.save_detail(
             url, title=title, description=description,
             thumbnail=info['thumbnail'], resolved_url=resolved_url,
-            headers=info['headers'], title_checked=title_checked)
+            headers=info['headers'], title_checked=title_checked,
+            has_chinese_subtitle=cn_sub, is_uncensored_leak=uncensored)
+        # The row may know flags this scrape didn't find.
+        row = store.get(url)
     except Exception:
         logger.exception('store write failed for %s', url)
-    return info
+        row = {'has_chinese_subtitle': cn_sub, 'is_uncensored_leak': uncensored}
+    return {**info, **_version_flags(row)}
+
+
+def _check_not_removed(url: str):
+    try:
+        removed = store.is_removed(store.get(url))
+    except Exception:
+        logger.exception('store read failed for %s', url)
+        removed = False
+    if removed:
+        raise HTTPException(status_code=404, detail='video removed')
 
 
 def _needs_detail(url: str) -> bool:
@@ -184,10 +209,12 @@ def resolve(req: ResolveRequest, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
 
+    _check_not_removed(url)
     _prefetcher.user_activity()
     info = _video_info(url)
     resolved_url = info['resolved_url']
-    output_name = req.output_name or f'{info["title"] or "video"}.mp4'
+    # Named by id, not title: some titles are too long for a file name.
+    output_name = req.output_name or f'{info["id"] or "video"}.mp4'
 
     try:
         remote_downloader.submit_task(resolved_url, output_name)
@@ -237,6 +264,7 @@ def detail(url: str, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
 
+    _check_not_removed(url)
     _prefetcher.user_activity()
     return {'ok': True, **_video_info(url)}
 
@@ -431,6 +459,11 @@ def _annotate_listing(site: str, videos: list[dict],
     """Fill id/description for listing cards, record them in the DB and
     apply what the DB already knows. *prefetch* queues their details."""
     for video in videos:
+        # The DB's form of the URL, so the client, the prefetch queue and the
+        # crawl all see one URL per page (MissAV links it with and without
+        # a /dm<N>/ prefix).
+        if video.get('url'):
+            video['url'] = store.normalize_url(video['url'])[0]
         video['id'] = store.url_slug(video.get('url', ''))
         if 'description' not in video:
             _, video['description'] = _split_title(
@@ -443,11 +476,17 @@ def _annotate_listing(site: str, videos: list[dict],
     except Exception:
         logger.exception('store update failed for %s listing', site)
         known = {}
+    # Removed videos stay out of every listing (and so out of the crawl).
+    videos = [v for v in videos if not store.is_removed(known.get(v.get('url', '')))]
     for video in videos:
         row = known.get(video.get('url', ''))
         if row and row['title']:
             video['title'] = row['title']
             video['description'] = row['description']
+        if row:
+            video.update(_version_flags(row))
+        else:
+            video.update(_version_flags(video))
     if prefetch:
         _prefetcher.enqueue([
             v['url'] for v in videos
@@ -511,6 +550,7 @@ def _search_cached_code(site: str, query: str, page: int) -> list[dict]:
         'duration': '',
         'id': row['id'],
         'description': row['description'],
+        **_version_flags(row),
     } for row in rows]
     if rows and page <= 1:
         _prefetcher.enqueue([row['url'] for row in rows if not store.has_detail(row)])
@@ -585,16 +625,16 @@ def _parse_recombee_batch(data) -> list[dict]:
         props = item.get('values', item)
         title = (props.get('title_cn') or props.get('full_title')
                   or props.get('title') or props.get('name') or '')
-        has_cn_sub = props.get('has_chinese_subtitle') is True
-        id_part = f'{item_id.upper()}[中文字幕]' if has_cn_sub else item_id.upper()
-        full_title = f'{id_part} {title}'.strip() if title else id_part
-        # "<code>[中文字幕] …" doesn't fit _split_title, so fill this here.
+        code = item_id.upper()
         videos.append({
             'url': f'https://missav.ai/cn/{item_id}',
-            'title': full_title,
+            'title': f'{code} {title}'.strip() if title else code,
             'description': title.strip(),
             'thumbnail': f'https://fourhoi.com/{item_id}/cover-t.jpg',
             'duration': '',
+            # The same flags MissAV's own cards badge as 中文字幕/无码影片.
+            **{flag: props[flag] if isinstance(props.get(flag), bool) else None
+               for flag in store.VERSION_FLAGS},
         })
     return videos
 
@@ -624,7 +664,8 @@ def _related_videos(site: str, url: str, count: int = 12,
                 'count': count,
                 'scenario': 'mobile-watch-next',
                 'returnProperties': True,
-                'includedProperties': ['title_cn', 'duration', 'dm'],
+                'includedProperties': ['title_cn', 'duration', 'dm',
+                                       *store.VERSION_FLAGS],
                 'cascadeCreate': True,
             },
         }],
@@ -779,6 +820,47 @@ def crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
 def crawl_status(x_api_key: str | None = Header(default=None)):
     _check_api_key(x_api_key)
     return _crawler.status()
+
+
+@app.get('/api/videos')
+def list_videos(
+        page: int = Query(1, ge=1), size: int = Query(12, ge=1, le=24),
+        site: str | None = None, deleted: bool = False,
+        x_api_key: str | None = Header(default=None)):
+    """Videos stored in the DB, newest first; with deleted=true, the ones
+    removed via DELETE /api/videos instead (most recently removed first).
+    Card fields only: resolved_url may have expired, so playback still goes
+    through /api/detail."""
+    _check_api_key(x_api_key)
+    rows, total = store.list_page(page, size, site or None, deleted)
+    videos = [{
+        'url': row['url'],
+        'site': row['site'],
+        'id': row['id'],
+        'title': row['title'],
+        'description': row['description'],
+        'thumbnail': row['thumbnail'],
+        'has_detail': store.has_detail(row),
+        **_version_flags(row),
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        **({'deleted_at': row['deleted_at']} if deleted else {}),
+    } for row in rows]
+    return {'videos': videos, 'page': page, 'size': size, 'total': total,
+            'pages': (total + size - 1) // size}
+
+
+@app.delete('/api/videos')
+def remove_video(url: str, x_api_key: str | None = Header(default=None)):
+    """Soft-delete a stored video: the row is kept, but the video is no
+    longer returned by any endpoint except /api/videos?deleted=true."""
+    _check_api_key(x_api_key)
+    url = (url or '').strip()
+    if not url:
+        raise HTTPException(status_code=400, detail='url is required')
+    if not store.remove(url):
+        raise HTTPException(status_code=404, detail='video not found')
+    return {'ok': True}
 
 
 @app.get('/api/browse/thumb')

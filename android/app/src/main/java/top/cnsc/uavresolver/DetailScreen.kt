@@ -2,15 +2,18 @@ package top.cnsc.uavresolver
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
@@ -39,6 +42,8 @@ fun VideoDetailDialog(
     onPlayVideo: (VideoDetail) -> Unit,
     isFullscreenActive: Boolean,
     onDismiss: () -> Unit,
+    // Called with the video's url once it was deleted on the server.
+    onRemoved: (String) -> Unit,
 ) {
     var detail by remember { mutableStateOf<VideoDetail?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -48,6 +53,8 @@ fun VideoDetailDialog(
     var relatedLoading by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var submitting by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf(false) }
+    var removing by remember { mutableStateOf(false) }
     // Long-pressing a recommendation opens another detail page stacked on top.
     var detailTarget by remember { mutableStateOf<BrowseVideo?>(null) }
     val scope = rememberCoroutineScope()
@@ -55,7 +62,12 @@ fun VideoDetailDialog(
     // (MissAV via its recommender, Jable's "猜你喜歡" block on the video page).
     val relatedSite = if (video.url.contains("missav", ignoreCase = true)) "missav" else "jabletv"
 
-    LaunchedEffect(video.url) {
+    // Bumped by the retry button to fetch the detail again.
+    var detailAttempt by remember { mutableStateOf(0) }
+
+    // The listing already gave title/cover, so the page shows those at once;
+    // this only fetches resolved_url, which play/download wait for.
+    LaunchedEffect(video.url, detailAttempt) {
         loading = true
         error = null
         when (val result = api.detail(baseUrl, apiKey, video.url)) {
@@ -92,10 +104,29 @@ fun VideoDetailDialog(
         }
     }
 
+    fun removeSelected() {
+        val urls = selected.toList()
+        if (urls.isEmpty()) return
+        scope.launch {
+            removing = true
+            val (removedUrls, msg) = removeUrls(api, baseUrl, apiKey, urls)
+            removing = false
+            related = related.filter { it.url !in removedUrls }
+            selected = selected - removedUrls
+            removedUrls.forEach(onRemoved)
+            onSubmitResult(msg, removedUrls.size == urls.size)
+        }
+    }
+
     fun submitRemoteDownload() {
+        val d = detail ?: return
         scope.launch {
             downloading = true
-            when (val result = api.resolve(baseUrl, apiKey, video.url)) {
+            // Reuses the resolved_url from /api/detail instead of having the
+            // server scrape the page again. Named by id, not title: some
+            // titles are too long for a file name.
+            val outputName = "${d.id.ifBlank { video.id }.ifBlank { "video" }}.mp4"
+            when (val result = api.download(baseUrl, apiKey, d.resolvedUrl, outputName)) {
                 is ResolveResult.Success -> {
                     history.add(HistoryEntry(video.url, result.outputName, true, "已提交", System.currentTimeMillis()))
                     onSubmitResult("已提交远程下载", true)
@@ -109,9 +140,29 @@ fun VideoDetailDialog(
         }
     }
 
-    // The listing title usually leads with the code ("IPZZ-891 ..."), so it can
-    // fill the top bar before /api/detail returns the real id.
-    val code = detail?.id?.ifBlank { null } ?: video.title.substringBefore(' ')
+    fun removeVideo() {
+        scope.launch {
+            removing = true
+            try {
+                api.removeVideo(baseUrl, apiKey, video.url)
+                onSubmitResult("已删除", true)
+                onRemoved(video.url)
+                onDismiss()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onSubmitResult(e.message ?: "删除失败", false)
+            }
+            removing = false
+        }
+    }
+
+    // The listing gives the id; failing that its title usually leads with the
+    // code ("IPZZ-891 ..."), so the top bar needn't wait for /api/detail.
+    val code = detail?.id?.ifBlank { null }
+        ?: video.id.ifBlank { null }?.uppercase()
+        ?: video.title.substringBefore(' ')
+    val resolved = detail?.resolvedUrl?.isNotBlank() == true
     val title = detail?.title?.ifBlank { null } ?: video.title
     val uriHandler = LocalUriHandler.current
 
@@ -158,17 +209,23 @@ fun VideoDetailDialog(
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize(),
                                 )
-                                if (loading) {
-                                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                                }
                             }
 
                             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                                Text(
-                                    code,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Medium,
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        code,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                    VersionBadges(
+                                        hasChineseSubtitle = detail?.hasChineseSubtitle
+                                            ?: video.hasChineseSubtitle,
+                                        isUncensoredLeak = detail?.isUncensoredLeak
+                                            ?: video.isUncensoredLeak,
+                                        modifier = Modifier.padding(start = 8.dp),
+                                    )
+                                }
                                 // /api/detail may swap an untranslated Japanese title for a
                                 // Chinese one, so prefer it once loaded.
                                 Text(
@@ -179,25 +236,49 @@ fun VideoDetailDialog(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(top = 8.dp),
                                 )
-                                error?.let {
-                                    Text(
-                                        it,
-                                        color = MaterialTheme.colorScheme.error,
+                                if (loading) {
+                                    Row(
                                         modifier = Modifier.padding(top = 8.dp),
-                                    )
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "正在获取播放地址...",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                error?.let {
+                                    Row(
+                                        modifier = Modifier.padding(top = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            it,
+                                            color = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.weight(1f, fill = false),
+                                        )
+                                        TextButton(onClick = { detailAttempt++ }) { Text("重试") }
+                                    }
                                 }
                                 Spacer(Modifier.height(16.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    // Four buttons can outgrow a narrow screen.
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
                                     DetailButton(
                                         text = "播放",
                                         icon = Icons.Default.PlayArrow,
-                                        enabled = detail != null,
+                                        enabled = resolved,
                                         onClick = { detail?.let { onPlayVideo(it) } },
                                     )
                                     DetailButton(
-                                        text = if (downloading) "提交中..." else "远程下载",
+                                        text = if (downloading) "提交中..." else "下载",
                                         icon = Icons.Default.CloudDownload,
-                                        enabled = !downloading,
+                                        enabled = resolved && !downloading,
                                         onClick = { submitRemoteDownload() },
                                     )
                                     DetailButton(
@@ -210,6 +291,12 @@ fun VideoDetailDialog(
                                                 onSubmitResult("无法打开浏览器", false)
                                             }
                                         },
+                                    )
+                                    DetailButton(
+                                        text = if (removing) "删除中..." else "删除",
+                                        icon = Icons.Default.Delete,
+                                        enabled = !removing,
+                                        onClick = { confirmRemove = true },
                                     )
                                 }
                             }
@@ -251,10 +338,27 @@ fun VideoDetailDialog(
                 }
 
                 if (selected.isNotEmpty()) {
-                    SelectionBar(count = selected.size, submitting = submitting, onSubmit = { submitSelected() })
+                    SelectionBar(
+                        count = selected.size, submitting = submitting, onSubmit = { submitSelected() },
+                        removing = removing, onRemove = { removeSelected() },
+                    )
                 }
             }
         }
+    }
+
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("删除视频") },
+            text = { Text("删除后 $code 将不再出现在任何列表中。") },
+            confirmButton = {
+                TextButton(onClick = { confirmRemove = false; removeVideo() }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemove = false }) { Text("取消") }
+            },
+        )
     }
 
     detailTarget?.let { item ->
@@ -268,6 +372,11 @@ fun VideoDetailDialog(
             onPlayVideo = onPlayVideo,
             isFullscreenActive = isFullscreenActive,
             onDismiss = { detailTarget = null },
+            onRemoved = { url ->
+                related = related.filter { it.url != url }
+                selected = selected - url
+                onRemoved(url)
+            },
         )
     }
 }

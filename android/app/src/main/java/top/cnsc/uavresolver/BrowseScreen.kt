@@ -37,6 +37,9 @@ import kotlinx.coroutines.launch
 
 private enum class PickerMode { NAV, MENU, TAGS }
 
+// Pseudo-site for the resolver's own stored-video list (/api/videos).
+private const val STORED_SITE = "stored"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowseScreen(
@@ -59,10 +62,15 @@ fun BrowseScreen(
     var activeSearch by remember { mutableStateOf("") }
     var page by remember { mutableStateOf(1) }
     var videos by remember { mutableStateOf<List<BrowseVideo>>(emptyList()) }
+    // Page count of the stored list; null for site listings, which don't say.
+    var lastPage by remember { mutableStateOf<Int?>(null) }
+    // Bumped to reload the current list when its other keys haven't changed.
+    var reloadKey by remember { mutableStateOf(0) }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var submitting by remember { mutableStateOf(false) }
+    var removing by remember { mutableStateOf(false) }
     var detailTarget by remember { mutableStateOf<BrowseVideo?>(null) }
     var menuExpanded by remember { mutableStateOf(false) }
     var pickerMode by remember { mutableStateOf<PickerMode?>(null) }
@@ -87,12 +95,17 @@ fun BrowseScreen(
     }
 
     suspend fun loadVideos(cat: BrowseCategory?, query: String, pageNum: Int) {
-        if (query.isEmpty() && cat == null) return
+        if (site != STORED_SITE && query.isEmpty() && cat == null) return
         loading = true
         error = null
         selected = emptySet()
+        lastPage = null
         try {
-            videos = if (query.isNotEmpty()) {
+            videos = if (site == STORED_SITE) {
+                val stored = api.storedVideos(baseUrl, apiKey, pageNum)
+                lastPage = stored.pages
+                stored.videos
+            } else if (query.isNotEmpty()) {
                 api.search(baseUrl, apiKey, site, query, pageNum)
             } else {
                 api.listVideos(baseUrl, apiKey, site, cat!!.url, pageNum)
@@ -126,6 +139,14 @@ fun BrowseScreen(
         }
     }
 
+    fun openStored() {
+        site = STORED_SITE
+        selectedCategory = null
+        activeSearch = ""
+        page = 1
+        reloadKey++
+    }
+
     fun searchSite(targetSite: String) {
         val q = searchQuery.trim()
         if (q.isEmpty()) {
@@ -138,7 +159,7 @@ fun BrowseScreen(
         page = 1
     }
 
-    LaunchedEffect(site, selectedCategory, activeSearch, page) {
+    LaunchedEffect(site, selectedCategory, activeSearch, page, reloadKey) {
         if (baseUrl.isNotEmpty() && apiKey.isNotEmpty() && site.isNotEmpty()) {
             loadVideos(selectedCategory, activeSearch, page)
             gridState.scrollToItem(0)
@@ -171,6 +192,19 @@ fun BrowseScreen(
             submitting = false
             selected = emptySet()
             onSubmitResult(msg.first, msg.second)
+        }
+    }
+
+    fun removeSelected() {
+        val urls = selected.toList()
+        if (urls.isEmpty()) return
+        scope.launch {
+            removing = true
+            val (removed, msg) = removeUrls(api, baseUrl, apiKey, urls)
+            removing = false
+            videos = videos.filter { it.url !in removed }
+            selected = selected - removed
+            onSubmitResult(msg, removed.size == urls.size)
         }
     }
 
@@ -251,10 +285,9 @@ fun BrowseScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    SearchBarButton(
-                        text = "Jable",
-                        onClick = { if (searchQuery.isBlank()) openSiteHome("jabletv") else searchSite("jabletv") },
-                    )
+                    // Jable's button is hidden to make room for the stored list;
+                    // its categories are still under the menu (菜单/标签).
+                    SearchBarButton(text = "Manko", onClick = { openStored() })
                     SearchBarButton(
                         text = "Miss",
                         onClick = { if (searchQuery.isBlank()) openSiteHome("missav") else searchSite("missav") },
@@ -347,7 +380,7 @@ fun BrowseScreen(
             )
             IconButton(
                 onClick = { page++ },
-                enabled = videos.isNotEmpty(),
+                enabled = videos.isNotEmpty() && lastPage.let { it == null || page < it },
                 modifier = Modifier.size(32.dp),
             ) {
                 Icon(Icons.Default.ArrowForward, contentDescription = "下一页", modifier = Modifier.size(18.dp))
@@ -355,7 +388,10 @@ fun BrowseScreen(
         }
 
         if (selected.isNotEmpty()) {
-            SelectionBar(count = selected.size, submitting = submitting, onSubmit = { submitSelected() })
+            SelectionBar(
+                count = selected.size, submitting = submitting, onSubmit = { submitSelected() },
+                removing = removing, onRemove = { removeSelected() },
+            )
         }
     }
 
@@ -370,6 +406,10 @@ fun BrowseScreen(
             onPlayVideo = onPlayVideo,
             isFullscreenActive = isFullscreenActive,
             onDismiss = { detailTarget = null },
+            onRemoved = { url ->
+                videos = videos.filter { it.url != url }
+                selected = selected - url
+            },
         )
     }
 
@@ -411,8 +451,17 @@ fun BrowseScreen(
     }
 }
 
+// The search bar's buttons: 44dp bar minus its 5dp inset, 10dp side padding.
+private val barButtonShape = RoundedCornerShape(8.dp)
+private val barButtonPadding = PaddingValues(horizontal = 10.dp)
+private val barButtonHeight = 34.dp
+
 @Composable
-fun SelectionBar(count: Int, submitting: Boolean, onSubmit: () -> Unit) {
+fun SelectionBar(
+    count: Int, submitting: Boolean, onSubmit: () -> Unit,
+    removing: Boolean, onRemove: () -> Unit,
+) {
+    var confirmRemove by remember { mutableStateOf(false) }
     Surface(
         tonalElevation = 4.dp,
         modifier = Modifier.fillMaxWidth(),
@@ -424,11 +473,62 @@ fun SelectionBar(count: Int, submitting: Boolean, onSubmit: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("已选 $count 个", modifier = Modifier.weight(1f))
-            Button(onClick = onSubmit, enabled = !submitting) {
-                Text(if (submitting) "提交中..." else "下载选中")
+            // Same shape/size as the search bar's Manko/Miss buttons.
+            OutlinedButton(
+                onClick = { confirmRemove = true },
+                enabled = !removing && !submitting,
+                shape = barButtonShape,
+                contentPadding = barButtonPadding,
+                modifier = Modifier.height(barButtonHeight),
+            ) {
+                Text(if (removing) "删除中..." else "删除", style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = onSubmit,
+                enabled = !submitting && !removing,
+                shape = barButtonShape,
+                contentPadding = barButtonPadding,
+                modifier = Modifier.height(barButtonHeight),
+            ) {
+                Text(if (submitting) "提交中..." else "下载", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("删除视频") },
+            text = { Text("删除选中的 $count 个视频？删除后它们将不再出现在任何列表中。") },
+            confirmButton = {
+                TextButton(onClick = { confirmRemove = false; onRemove() }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemove = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+/** Deletes each url on the server; returns the ones deleted and the summary message. */
+suspend fun removeUrls(
+    api: ResolverApi, baseUrl: String, apiKey: String, urls: List<String>,
+): Pair<Set<String>, String> {
+    val removed = mutableSetOf<String>()
+    var lastError: String? = null
+    for (url in urls) {
+        try {
+            api.removeVideo(baseUrl, apiKey, url)
+            removed += url
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            lastError = e.message ?: "删除失败"
+        }
+    }
+    val fail = urls.size - removed.size
+    val msg = if (fail == 0) "已删除 ${removed.size} 个" else "已删除 ${removed.size} 个，失败 $fail 个：$lastError"
+    return removed to msg
 }
 
 /** Submits each url for remote download; returns the summary message and whether all succeeded. */
@@ -459,7 +559,7 @@ private fun SearchBarButton(text: String, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxHeight()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(8.dp),
+        shape = barButtonShape,
         color = Color(0xFF616161),
     ) {
         Box(
@@ -469,6 +569,36 @@ private fun SearchBarButton(text: String, onClick: () -> Unit) {
             Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium)
         }
     }
+}
+
+// Same labels and colours as MissAV's own cards, which is how it tells a
+// code's pages (ipx-771 / ipx-771-uncensored-leak ...) apart.
+private val chineseSubtitleColor = Color(0xFF991B1B)
+private val uncensoredLeakColor = Color(0xFF1E40AF)
+
+@Composable
+fun VersionBadges(
+    hasChineseSubtitle: Boolean?,
+    isUncensoredLeak: Boolean?,
+    modifier: Modifier = Modifier,
+) {
+    if (hasChineseSubtitle != true && isUncensoredLeak != true) return
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (hasChineseSubtitle == true) VersionBadge("中文字幕", chineseSubtitleColor)
+        if (isUncensoredLeak == true) VersionBadge("无码影片", uncensoredLeakColor)
+    }
+}
+
+@Composable
+private fun VersionBadge(text: String, color: Color) {
+    Text(
+        text,
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier
+            .background(color.copy(alpha = 0.75f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -502,6 +632,11 @@ fun VideoCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f),
+                )
+                VersionBadges(
+                    hasChineseSubtitle = video.hasChineseSubtitle,
+                    isUncensoredLeak = video.isUncensoredLeak,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),
                 )
                 if (video.duration.isNotEmpty()) {
                     Text(

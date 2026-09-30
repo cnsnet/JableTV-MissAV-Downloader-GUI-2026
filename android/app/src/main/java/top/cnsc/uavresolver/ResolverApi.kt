@@ -33,7 +33,14 @@ data class BrowseVideo(
     val title: String,
     val thumbnail: String,
     val duration: String,
+    // The page's id (URL slug) as the resolver stored it; may be empty.
+    val id: String = "",
+    // MissAV's 中文字幕/无码影片 flags; null when not known (e.g. JableTV).
+    val hasChineseSubtitle: Boolean? = null,
+    val isUncensoredLeak: Boolean? = null,
 )
+
+data class StoredVideoPage(val videos: List<BrowseVideo>, val pages: Int)
 
 data class VideoDetail(
     val title: String,
@@ -42,6 +49,8 @@ data class VideoDetail(
     val thumbnail: String,
     val resolvedUrl: String,
     val headers: Map<String, String>,
+    val hasChineseSubtitle: Boolean? = null,
+    val isUncensoredLeak: Boolean? = null,
 )
 
 sealed class DetailResult {
@@ -133,6 +142,8 @@ class ResolverApi {
                         thumbnail = json.optString("thumbnail"),
                         resolvedUrl = json.optString("resolved_url"),
                         headers = headers,
+                        hasChineseSubtitle = json.optFlag("has_chinese_subtitle"),
+                        isUncensoredLeak = json.optFlag("is_uncensored_leak"),
                     )
                 )
             } catch (e: Exception) {
@@ -190,6 +201,32 @@ class ResolverApi {
         parseVideos(executeGet(url, apiKey))
     }
 
+    // Videos the resolver has stored in its DB, newest first.
+    suspend fun storedVideos(
+        baseUrl: String, apiKey: String, page: Int,
+    ): StoredVideoPage = withContext(Dispatchers.IO) {
+        val url = "${baseUrl.trimEnd('/')}/api/videos".toHttpUrl().newBuilder()
+            .addQueryParameter("page", page.toString())
+            .build()
+        val text = executeGet(url, apiKey)
+        StoredVideoPage(parseVideos(text), JSONObject(text).optInt("pages", 0))
+    }
+
+    // Soft-deletes a stored video: it's hidden from every listing afterwards.
+    suspend fun removeVideo(baseUrl: String, apiKey: String, videoUrl: String) =
+        withContext(Dispatchers.IO) {
+            val url = "${baseUrl.trimEnd('/')}/api/videos".toHttpUrl().newBuilder()
+                .addQueryParameter("url", videoUrl)
+                .build()
+            val request = Request.Builder().url(url).addHeader("X-API-Key", apiKey).delete().build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val text = resp.body?.string().orEmpty()
+                    throw ResolverException("HTTP ${resp.code}: ${extractDetail(text, resp.code)}")
+                }
+            }
+        }
+
     fun thumbUrl(baseUrl: String, apiKey: String, originalUrl: String): String {
         val encodedUrl = URLEncoder.encode(originalUrl, "UTF-8")
         val encodedKey = URLEncoder.encode(apiKey, "UTF-8")
@@ -236,7 +273,13 @@ class ResolverApi {
                 title = o.optString("title"),
                 thumbnail = o.optString("thumbnail"),
                 duration = o.optString("duration"),
+                id = o.optString("id"),
+                hasChineseSubtitle = o.optFlag("has_chinese_subtitle"),
+                isUncensoredLeak = o.optFlag("is_uncensored_leak"),
             )
         }
     }
+
+    private fun JSONObject.optFlag(name: String): Boolean? =
+        if (isNull(name)) null else optBoolean(name)
 }

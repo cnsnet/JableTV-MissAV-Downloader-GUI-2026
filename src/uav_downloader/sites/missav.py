@@ -14,6 +14,79 @@ from bs4 import BeautifulSoup
 from uav_downloader.i18n import sites as site_i18n
 
 
+# MissAV tells a code's pages apart (ipx-771 vs ipx-771-uncensored-leak) by two
+# per-page flags, which its own UI shows as badges. The URL suffix is not
+# enough: plain pages like ipx-771 are often the Chinese-subtitle version.
+_CHINESE_SUBTITLE_SUFFIXES = ('-chinese-subtitle', '-chinese-subtitles')
+_UNCENSORED_LEAK_SUFFIX = '-uncensored-leak'
+# Listing cards: one badge in the thumbnail's bottom-left corner, coloured
+# by kind (the text is localised, the colour isn't). Only the first that
+# applies is shown: 中文字幕 (Chinese pages only), English subtitle
+# (other pages), then 无码影片.
+_BADGE_CLASS_CHINESE_SUBTITLE = 'bg-red-800'
+_BADGE_CLASS_UNCENSORED_LEAK = 'bg-blue-800'
+# Video pages: the genre row links to these category pages, without the
+# /dm<N>/ prefix the site menu's links to them carry.
+_TYPE_LINK_RE = re.compile(r'^/(?:[a-z]{2}/)?(chinese-subtitle|uncensored-leak)/?$')
+_GENRE_LINK_RE = re.compile(r'/genres/[^/]+$')
+
+
+def _is_chinese_page(url):
+    from urllib.parse import urlsplit
+    lang = re.match(r'/(?:dm\d+/)?([a-z]{2})/', urlsplit(url or '').path)
+    return not lang or lang.group(1) == 'cn'
+
+
+def _with_slug(flags, url):
+    """OR a URL suffix, which is always right, into (possibly None) flags."""
+    return tuple(True if slug else flag
+                 for flag, slug in zip(flags, _slug_flags(url)))
+
+
+def _slug_flags(url):
+    slug = (url or '').split('?', 1)[0].rstrip('/').rsplit('/', 1)[-1].lower()
+    return (slug.endswith(_CHINESE_SUBTITLE_SUFFIXES),
+            slug.endswith(_UNCENSORED_LEAK_SUFFIX))
+
+
+def card_version_flags(card, url, listing_url):
+    """(has_chinese_subtitle, is_uncensored_leak) of a listing card; None
+    where the badge shown hides it."""
+    classes = set()
+    for badge in card.select('span.absolute.bottom-1.left-1'):
+        classes.update(badge.get('class') or [])
+    cn_sub = (_BADGE_CLASS_CHINESE_SUBTITLE in classes
+              if _is_chinese_page(listing_url) else None)
+    if _BADGE_CLASS_UNCENSORED_LEAK in classes:
+        uncensored = True
+    else:
+        # Another badge would have been shown in its place.
+        uncensored = None if classes else False
+    return _with_slug((cn_sub, uncensored), url)
+
+
+def page_version_flags(soup, url):
+    """(has_chinese_subtitle, is_uncensored_leak) of a video page, or None if
+    its genre row ("<span>类型:</span> <a>…") wasn't found. Only Chinese pages
+    list 中文字幕 there, so elsewhere that flag is None (unknown) unless the
+    URL suffix says so."""
+    from urllib.parse import urlsplit
+    for genre in soup.select('a[href*="/genres/"]'):
+        row = genre.parent
+        if (row is None or row.name != 'div'
+                or row.find('span', recursive=False) is None
+                or not _GENRE_LINK_RE.search(urlsplit(genre['href']).path)):
+            continue
+        kinds = set()
+        for link in row.find_all('a', href=True, recursive=False):
+            match = _TYPE_LINK_RE.match(urlsplit(link['href']).path)
+            if match:
+                kinds.add(match.group(1))
+        cn_sub = 'chinese-subtitle' in kinds if _is_chinese_page(url) else None
+        return _with_slug((cn_sub, 'uncensored-leak' in kinds), url)
+    return None
+
+
 def _unpack_js_eval(script_text):
     """Decode Dean Edwards p,a,c,k,e,d packer."""
     match = re.search(
@@ -93,6 +166,11 @@ class SiteMissAV(M3U8Crawler):
             raise Exception(f"頁面解析失敗（版面改版或影片不存在）: {self._url}")
         self._extra_headers = {'Referer': f'https://{host}/', 'Origin': f'https://{host}'}
         htmlfile = resp
+        try:
+            self._version_flags = page_version_flags(
+                BeautifulSoup(htmlfile.content, 'html.parser'), self._url)
+        except Exception:
+            self._version_flags = None
 
         # Title from og:title
         og_title = re.search(r'og:title"\s+content="([^"]+)"', htmlfile.text)
@@ -214,7 +292,9 @@ class MissAVBrowser:
                     title_text = title_a.get_text(strip=True) or title_text
                 duration_span = card.select_one('span.absolute.bottom-1.right-1')
                 duration = duration_span.get_text(strip=True) if duration_span else ''
-                videos.append({'url': video_url, 'title': title_text, 'thumbnail': thumbnail, 'duration': duration})
+                cn_sub, uncensored = card_version_flags(card, video_url, str(resp.url))
+                videos.append({'url': video_url, 'title': title_text, 'thumbnail': thumbnail, 'duration': duration,
+                               'has_chinese_subtitle': cn_sub, 'is_uncensored_leak': uncensored})
             return videos
         except Exception:
             return []

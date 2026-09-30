@@ -151,7 +151,7 @@ uav-watcher
 # 安卓apk
 cd .\android\
 .\gradlew.bat assembleDebug
-$env:Path += ";$env:USERPROFILE\AppData\Local\Android\Sdk\platform-tools"
+$env:Path += ";$env:LOCALAPPDATA\Android\Sdk\platform-tools"
 adb install -r ".\app\build\outputs\apk\debug\app-debug.apk"
 
 # 单个网址、无 GUI，并指定保存位置与每片 3 个下载线程
