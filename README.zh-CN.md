@@ -148,6 +148,12 @@ uav-browser
 # 分类自动监控工具
 uav-watcher
 
+# 安卓apk
+cd .\android\
+.\gradlew.bat assembleDebug
+$env:Path += ";%USERPROFILE%\AppData\Local\Android\Sdk\platform-tools"
+adb install -r ".\android\app\build\outputs\apk\debug\app-debug.apk"
+
 # 单个网址、无 GUI，并指定保存位置与每片 3 个下载线程
 uav-browser --nogui --url "https://jable.tv/videos/example/" --output "/path/to/downloads" --max-workers-per-video 3
 ```
@@ -157,6 +163,40 @@ uav-browser --nogui --url "https://jable.tv/videos/example/" --output "/path/to/
 Linux 若未内置 Tk，请先通过系统包管理器安装 `python3-tk`。macOS／Linux 使用源代码运行；免安装 EXE 仅提供给 Windows。
 
 ## Docker / NAS
+
+编译镜像
+```
+wsl -d Ubuntu -- bash -lc "cd /mnt/d/PythonProjects/JableTV-MissAV-Downloader-GUI-2026 && docker build -f Dockerfile.resolver -t uav-resolver:latest . && docker save uav-resolver:latest | gzip > uav-resolver.tar.gz"
+```
+
+使用Docker compose安装镜像
+```
+services:
+  uav_parser:
+    image: uav-resolver:latest
+    container_name: uav_parser
+    environment:
+      - RESOLVER_API_KEY=API_KEY
+      - REMOTE_DL_BASE_URL=URL
+      - REMOTE_DL_USERNAME=USERNAME
+      - REMOTE_DL_PASSWORD=PASSWORD
+    volumes:
+      - ./data:/data
+    networks:
+      resolver_net:
+        ipv4_address: IPV4
+    restart: unless-stopped
+
+networks:
+  resolver_net:
+    driver: macvlan
+    driver_opts:
+      parent: eth0
+    ipam:
+      config:
+        - subnet: IPV4/24
+          gateway: IPV4
+```
 
 公开镜像为 `ghcr.io/alos21750/uav-downloader:latest`，GitHub Actions 会构建 amd64 和 arm64 版本。
 
