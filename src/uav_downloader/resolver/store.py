@@ -251,22 +251,46 @@ def get(url: str) -> dict | None:
     return get_many([url]).get(url)
 
 
+def _like_escape(text: str) -> str:
+    return text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
+# The id with its separators dropped, so "ipx789" / "IPX 789" find ipx-789.
+_COMPACT_ID = "REPLACE(REPLACE(id, '-', ''), '_', '')"
+
+
 def list_page(page: int, size: int, site: str | None = None,
-              deleted: bool = False) -> tuple[list[dict], int]:
+              deleted: bool = False,
+              search: str | None = None) -> tuple[list[dict], int]:
     """One page of stored rows, newest first, plus their count: the live
-    ones, or with *deleted* the removed ones (most recently removed first)."""
+    ones, or with *deleted* the removed ones (most recently removed first).
+    *search* matches the code anywhere in the id (ipx -> ipx-789,
+    ipx-789-chinese-subtitle ...) or the title; exact and prefix code
+    matches come first."""
     if deleted:
         where, order = 'WHERE deleted_at IS NOT NULL', 'deleted_at DESC, url'
     else:
         where, order = 'WHERE deleted_at IS NULL', 'created_at DESC, url'
-    args = []
+    args, order_args = [], []
     if site:
         where, args = where + ' AND site = ?', [site]
+    search = (search or '').strip()
+    if search:
+        code = re.sub(r'[^0-9a-z]', '', search.lower())
+        conds = ["title LIKE ? ESCAPE '\\'"]
+        args.append(f'%{_like_escape(search)}%')
+        if code:
+            conds.append(f'{_COMPACT_ID} LIKE ?')
+            args.append(f'%{code}%')
+            order = (f'CASE WHEN {_COMPACT_ID} = ? THEN 0'
+                     f' WHEN {_COMPACT_ID} LIKE ? THEN 1 ELSE 2 END, {order}')
+            order_args = [code, f'{code}%']
+        where += f' AND ({" OR ".join(conds)})'
     with _connect() as conn:
         total = conn.execute(f'SELECT COUNT(*) FROM videos {where}', args).fetchone()[0]
         cur = conn.execute(
             f'SELECT * FROM videos {where} ORDER BY {order}'
-            ' LIMIT ? OFFSET ?', [*args, size, (page - 1) * size])
+            ' LIMIT ? OFFSET ?', [*args, *order_args, size, (page - 1) * size])
         return [dict(row) for row in cur], total
 
 

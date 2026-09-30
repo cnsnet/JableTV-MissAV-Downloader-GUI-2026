@@ -201,13 +201,15 @@ class ResolverApi {
         parseVideos(executeGet(url, apiKey))
     }
 
-    // Videos the resolver has stored in its DB, newest first.
+    // Videos the resolver has stored in its DB, newest first; a non-empty
+    // search fuzzy-matches the code (ipx -> ipx-789, ipx-789-...) or title.
     suspend fun storedVideos(
-        baseUrl: String, apiKey: String, page: Int,
+        baseUrl: String, apiKey: String, page: Int, search: String = "",
     ): StoredVideoPage = withContext(Dispatchers.IO) {
-        val url = "${baseUrl.trimEnd('/')}/api/videos".toHttpUrl().newBuilder()
+        val builder = "${baseUrl.trimEnd('/')}/api/videos".toHttpUrl().newBuilder()
             .addQueryParameter("page", page.toString())
-            .build()
+        if (search.isNotEmpty()) builder.addQueryParameter("search", search)
+        val url = builder.build()
         val text = executeGet(url, apiKey)
         StoredVideoPage(parseVideos(text), JSONObject(text).optInt("pages", 0))
     }

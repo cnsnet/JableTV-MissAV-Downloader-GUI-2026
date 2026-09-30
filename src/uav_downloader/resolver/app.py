@@ -826,13 +826,15 @@ def crawl_status(x_api_key: str | None = Header(default=None)):
 def list_videos(
         page: int = Query(1, ge=1), size: int = Query(12, ge=1, le=24),
         site: str | None = None, deleted: bool = False,
+        search: str | None = None,
         x_api_key: str | None = Header(default=None)):
     """Videos stored in the DB, newest first; with deleted=true, the ones
     removed via DELETE /api/videos instead (most recently removed first).
-    Card fields only: resolved_url may have expired, so playback still goes
-    through /api/detail."""
+    search= fuzzy-matches the code (ipx -> ipx-789, ipx-789-uncensored-leak
+    ...) or the title. Card fields only: resolved_url may have expired, so
+    playback still goes through /api/detail."""
     _check_api_key(x_api_key)
-    rows, total = store.list_page(page, size, site or None, deleted)
+    rows, total = store.list_page(page, size, site or None, deleted, search)
     videos = [{
         'url': row['url'],
         'site': row['site'],

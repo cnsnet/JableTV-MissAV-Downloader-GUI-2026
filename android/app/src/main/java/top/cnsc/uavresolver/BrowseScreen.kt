@@ -102,7 +102,7 @@ fun BrowseScreen(
         lastPage = null
         try {
             videos = if (site == STORED_SITE) {
-                val stored = api.storedVideos(baseUrl, apiKey, pageNum)
+                val stored = api.storedVideos(baseUrl, apiKey, pageNum, query)
                 lastPage = stored.pages
                 stored.videos
             } else if (query.isNotEmpty()) {
@@ -139,10 +139,11 @@ fun BrowseScreen(
         }
     }
 
+    // With a keyword in the bar, searches the stored list instead.
     fun openStored() {
         site = STORED_SITE
         selectedCategory = null
-        activeSearch = ""
+        activeSearch = searchQuery.trim()
         page = 1
         reloadKey++
     }
