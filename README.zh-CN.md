@@ -152,7 +152,7 @@ uav-watcher
 cd .\android\
 .\gradlew.bat assembleDebug
 $env:Path += ";$env:USERPROFILE\AppData\Local\Android\Sdk\platform-tools"
-adb install -r ".\android\app\build\outputs\apk\debug\app-debug.apk"
+adb install -r ".\app\build\outputs\apk\debug\app-debug.apk"
 
 # 单个网址、无 GUI，并指定保存位置与每片 3 个下载线程
 uav-browser --nogui --url "https://jable.tv/videos/example/" --output "/path/to/downloads" --max-workers-per-video 3
