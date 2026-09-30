@@ -410,8 +410,10 @@ def _jable_cn_title(code: str, title: str) -> tuple[str, bool]:
     return cn_title or title, True
 
 
-def _fetch_listing(site: str, url: str, related: bool = False) -> dict:
-    _prefetcher.user_activity()
+def _fetch_listing(site: str, url: str, related: bool = False,
+                   from_user: bool = True) -> dict:
+    if from_user:
+        _prefetcher.user_activity()
     browser = _get_browser(site)
     try:
         videos = browser.fetch_related(url) if related else browser.fetch_page(url)
@@ -463,6 +465,57 @@ def browse_videos(
     return result
 
 
+_CODE_QUERY_RE = re.compile(r'^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$')
+
+# A code answered from the DB still gets one background site search, which
+# stores any variant page (中文字幕/无码…) the DB hasn't seen yet. Variants
+# rarely appear later, so the same code is re-searched at most once a day.
+_CODE_REFRESH_TTL = 24 * 3600
+_code_refreshed: dict[tuple[str, str], float] = {}
+_code_refreshed_lock = threading.Lock()
+
+
+def _refresh_code_search(site: str, code: str):
+    key = (site, code.upper())
+    with _code_refreshed_lock:
+        last = _code_refreshed.get(key)
+    if last is not None and time.monotonic() - last < _CODE_REFRESH_TTL:
+        return
+    url = _search_base_url(site, code)
+
+    def run():
+        _fetch_listing(site, url, from_user=False)
+        # Marked only once it succeeded: a search dropped from the queue by
+        # a block, or one that failed, is retried on the next lookup.
+        with _code_refreshed_lock:
+            _code_refreshed[key] = time.monotonic()
+
+    _prefetcher.enqueue_call(f'search:{site}:{key[1]}', run)
+
+
+def _search_cached_code(site: str, query: str, page: int) -> list[dict]:
+    """Stored videos for a search that is just a video code, else []."""
+    if not (_CODE_QUERY_RE.match(query) and re.search(r'\d', query)):
+        return []
+    try:
+        rows = store.find_by_code(site, query)
+    except Exception:
+        logger.exception('store code lookup failed for %s', query)
+        return []
+    videos = [{
+        'url': row['url'],
+        'title': row['title'],
+        'thumbnail': row['thumbnail'],
+        'duration': '',
+        'id': row['id'],
+        'description': row['description'],
+    } for row in rows]
+    if rows and page <= 1:
+        _prefetcher.enqueue([row['url'] for row in rows if not store.has_detail(row)])
+        _refresh_code_search(site, query)
+    return videos
+
+
 @app.get('/api/browse/{site}/search')
 def browse_search(
         site: str, q: str, page: int = 1,
@@ -472,6 +525,12 @@ def browse_search(
     query = (q or '').strip()
     if not query:
         raise HTTPException(status_code=400, detail='q is required')
+    cached = _search_cached_code(site, query, page)
+    if cached:
+        # A code names one video, so the DB rows are answered straight away
+        # (the background search above picks up variants for next time);
+        # later pages are empty rather than falling through to the site.
+        return {'videos': cached if page <= 1 else [], 'page': page}
     url = _build_page_url(site, _search_base_url(site, query), max(1, page))
     result = _fetch_listing(site, url)
     result['page'] = page

@@ -186,6 +186,20 @@ def save_detail(url: str, *, video_id: str, title: str, description: str,
              json.dumps(headers or {}), int(title_checked), now, now))
 
 
+def find_by_code(site: str, code: str) -> list[dict]:
+    """Rows for a video code, including variant pages whose id carries a
+    suffix (SONE-001-CHINESE-SUBTITLE, ...). Ids only use [A-Z0-9_-], so
+    [code, code + '.') holds exactly code and code-*; as one range it stays
+    on the (site, id) index, unlike LIKE or an OR."""
+    code = code.upper()
+    with _connect() as conn:
+        cur = conn.execute(
+            'SELECT * FROM videos WHERE site = ? AND id >= ? AND id < ?'
+            ' ORDER BY created_at, url',
+            (site, code, code + '.'))
+        return [dict(row) for row in cur]
+
+
 def translated_title_for(site: str, video_id: str) -> str | None:
     """A Chinese title already found for this code on another row (e.g. the
     same Jable video reached through a different URL), or None."""

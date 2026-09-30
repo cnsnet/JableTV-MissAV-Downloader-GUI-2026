@@ -9,11 +9,18 @@ already holds resolved_url by the time the user opens a video.
 Getting rate-limited would cost far more than prefetch saves, so it runs
 one page at a time: a random gap between pages, a pause while the user's
 own requests are hitting the sites, and a steep backoff after a failure
-(Cloudflare block, network). A JableTV page
+(Cloudflare block, network). A block also drops everything still queued:
+fetch_with_mirrors has already tried every mirror by then, so pressing on
+would only add requests; the next listing the user opens re-queues its own
+videos, which run once the backoff is over. A JableTV page
 also costs a MissAV title lookup, so one "page" may be two requests.
 The newest listing goes to the front: the page the user is looking at right
 now matters more than one they scrolled past, and when the queue is full the
 oldest entries are dropped.
+
+Besides page URLs the queue takes arbitrary jobs (enqueue_call), e.g. the
+site search that refreshes a code answered from the DB, so every background
+request shares the same pacing.
 """
 
 import logging
@@ -49,6 +56,7 @@ class Prefetcher:
         self._needs_fetch = needs_fetch
         self._queue: deque[str] = deque()
         self._queued: set[str] = set()
+        self._calls: dict[str, Callable[[], object]] = {}
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self._last_user = 0.0
@@ -58,32 +66,58 @@ class Prefetcher:
         self._last_user = time.monotonic()
 
     def enqueue(self, urls: list[str]):
+        """Queue page URLs for *fetch*, ahead of everything already queued."""
         if not ENABLED:
             return
         with self._cond:
             # Reversed appendleft keeps the listing's own order at the front.
             for url in reversed(urls):
-                if not url:
-                    continue
-                if url in self._queued:
-                    self._queue.remove(url)
-                self._queue.appendleft(url)
-                self._queued.add(url)
-            while len(self._queue) > MAX_QUEUE:
-                self._queued.discard(self._queue.pop())
-            self._cond.notify()
-            if self._thread is None:
-                self._thread = threading.Thread(
-                    target=self._run, name='detail-prefetch', daemon=True)
-                self._thread.start()
+                if url:
+                    self._push_front(url)
+            self._wake()
 
-    def _next(self) -> str:
+    def enqueue_call(self, key: str, call: Callable[[], object]):
+        """Queue a job at the front; a pending job with the same *key* is
+        replaced. It may raise like *fetch* does, with the same backoff."""
+        if not ENABLED:
+            return
+        with self._cond:
+            self._push_front(key)
+            self._calls[key] = call
+            self._wake()
+
+    def _push_front(self, key: str):
+        if key in self._queued:
+            self._queue.remove(key)
+        self._queue.appendleft(key)
+        self._queued.add(key)
+
+    def _wake(self):
+        while len(self._queue) > MAX_QUEUE:
+            key = self._queue.pop()
+            self._queued.discard(key)
+            self._calls.pop(key, None)
+        self._cond.notify()
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run, name='detail-prefetch', daemon=True)
+            self._thread.start()
+
+    def _next(self) -> tuple[str, Callable[[], object] | None]:
         with self._cond:
             while not self._queue:
                 self._cond.wait()
-            url = self._queue.popleft()
-            self._queued.discard(url)
-            return url
+            key = self._queue.popleft()
+            self._queued.discard(key)
+            return key, self._calls.pop(key, None)
+
+    def _clear(self) -> int:
+        with self._cond:
+            dropped = len(self._queue)
+            self._queue.clear()
+            self._queued.clear()
+            self._calls.clear()
+            return dropped
 
     def _wait_for_quiet(self):
         while True:
@@ -98,20 +132,25 @@ class Prefetcher:
     def _run(self):
         failures = 0
         while True:
-            url = self._next()
+            url, call = self._next()
             try:
-                if not self._needs_fetch(url):
+                if call is None and not self._needs_fetch(url):
                     continue
                 self._wait_for_quiet()
-                self._fetch(url)
+                if call is None:
+                    self._fetch(url)
+                else:
+                    call()
                 failures = 0
                 logger.info('prefetched %s', url)
             except Exception as exc:
                 if getattr(exc, 'status_code', 500) >= 500:
                     failures += 1
                     backoff = min(_BACKOFF_BASE * 2 ** (failures - 1), _BACKOFF_MAX)
-                    logger.warning('prefetch failed for %s (%s); backing off %ds',
-                                   url, getattr(exc, 'detail', exc), backoff)
+                    dropped = self._clear()
+                    logger.warning('prefetch failed for %s (%s); dropped %d queued,'
+                                   ' backing off %ds', url,
+                                   getattr(exc, 'detail', exc), dropped, backoff)
                     time.sleep(backoff)
                 else:
                     # The page itself can't be parsed; not a sign of blocking.
