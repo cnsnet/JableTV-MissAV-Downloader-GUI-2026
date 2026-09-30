@@ -29,7 +29,7 @@ RUN mkdir -p /data
 VOLUME /data
 # Set at `docker run` time (or in docker-compose):
 #   RESOLVER_API_KEY   - shared secret the Android client must send as X-API-Key
-#   REMOTE_DL_BASE_URL - e.g. http://s.cnsc.top:38090
+#   REMOTE_DL_BASE_URL - e.g. http://your-server:38090
 #   REMOTE_DL_USERNAME / REMOTE_DL_PASSWORD - remote download server login
 # Optional — background detail prefetch for videos returned by list endpoints:
 #   RESOLVER_PREFETCH=0                  - turn it off (default on)

@@ -8,25 +8,52 @@ remote download server instead, which fetches and assembles the video on
 its own.
 """
 
+import json
 import os
 import threading
 
 import requests
 
-# Environment variables take precedence so the resolver service (deployed in
-# its own Docker container) never needs the credentials baked into source;
-# the literals remain as the default for the desktop app's own dev/test use.
-REMOTE_BASE_URL = os.environ.get('REMOTE_DL_BASE_URL', 'http://s.cnsc.top:38090')
-REMOTE_USERNAME = os.environ.get('REMOTE_DL_USERNAME', 'admin')
-REMOTE_PASSWORD = os.environ.get('REMOTE_DL_PASSWORD', 'Weifang@2026#')
+from uav_downloader.core.paths import product_data_dir
+
 _TIMEOUT = 20
 
 _lock = threading.Lock()
 _auth_token = None
+_settings = None
 
 
 class RemoteDownloadError(Exception):
     """The remote download server could not be logged into or rejected a task."""
+
+
+def _settings_path():
+    return product_data_dir() / 'remote_downloader.json'
+
+
+def _load_settings() -> tuple[str, str, str]:
+    """(base_url, username, password). Never kept in source: the resolver
+    container passes REMOTE_DL_* env vars; the desktop app, which has no
+    env of its own, reads remote_downloader.json from its data folder
+    ({"base_url": ..., "username": ..., "password": ...})."""
+    global _settings
+    if _settings is None:
+        try:
+            with open(_settings_path(), encoding='utf-8') as fh:
+                stored = json.load(fh)
+        except (OSError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        base_url = os.environ.get('REMOTE_DL_BASE_URL') or stored.get('base_url') or ''
+        username = os.environ.get('REMOTE_DL_USERNAME') or stored.get('username') or ''
+        password = os.environ.get('REMOTE_DL_PASSWORD') or stored.get('password') or ''
+        if not (base_url and username and password):
+            raise RemoteDownloadError(
+                '遠端下載伺服器未設定：請設定環境變數 REMOTE_DL_BASE_URL / '
+                f'REMOTE_DL_USERNAME / REMOTE_DL_PASSWORD，或建立 {_settings_path()}')
+        _settings = (base_url.rstrip('/'), username, password)
+    return _settings
 
 
 def _extract_token(resp):
@@ -42,10 +69,11 @@ def _extract_token(resp):
 
 def _login():
     global _auth_token
+    base_url, username, password = _load_settings()
     try:
         resp = requests.post(
-            f'{REMOTE_BASE_URL}/api/auth/login',
-            json={'username': REMOTE_USERNAME, 'password': REMOTE_PASSWORD},
+            f'{base_url}/api/auth/login',
+            json={'username': username, 'password': password},
             timeout=_TIMEOUT)
     except requests.RequestException as exc:
         raise RemoteDownloadError(f'遠端下載伺服器登入失敗：{exc}') from exc
@@ -72,12 +100,13 @@ def submit_task(m3u8_url: str, output_name: str) -> None:
     Raises RemoteDownloadError if the task was not accepted; callers should
     treat that as a failed download rather than falling back to a local one.
     """
+    base_url = _load_settings()[0]
     token = _get_token()
     body = {'url': m3u8_url, 'output_name': output_name}
     for attempt in range(2):
         try:
             resp = requests.post(
-                f'{REMOTE_BASE_URL}/api/tasks',
+                f'{base_url}/api/tasks',
                 json=body,
                 headers={'Cookie': f'auth_token={token}'},
                 timeout=_TIMEOUT)
