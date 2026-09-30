@@ -213,7 +213,7 @@ fun SettingsScreen(
         OutlinedTextField(
             value = baseUrl,
             onValueChange = onBaseUrlChange,
-            label = { Text("解析服务地址，如 http://s.cnsc.top:38060") },
+            label = { Text("解析服务地址，如 http://192.168.1.10:8060") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth(),
