@@ -604,7 +604,7 @@ def _missav_item_id(url: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
-def _parse_recombee_batch(data) -> list[dict]:
+def _recombee_recomms(data) -> list[dict]:
     if isinstance(data, list):
         first = data[0] if data else None
     elif isinstance(data, dict):
@@ -614,11 +614,13 @@ def _parse_recombee_batch(data) -> list[dict]:
         first = None
     if not first:
         return []
-
     inner = first.get('json') or {}
-    recomms = inner.get('recomms') or []
+    return inner.get('recomms') or []
+
+
+def _parse_recombee_batch(data) -> list[dict]:
     videos = []
-    for item in recomms:
+    for item in _recombee_recomms(data):
         item_id = item.get('id') or item.get('code')
         if not item_id:
             continue
@@ -650,38 +652,108 @@ def _related_videos(site: str, url: str, count: int = 12,
     if site != 'missav':
         return []
 
+    data = _recombee_related(url, count, ['title_cn', 'duration', 'dm',
+                                          *store.VERSION_FLAGS])
+    return _annotate_listing(site, _parse_recombee_batch(data), prefetch)
+
+
+def _recombee_related(url: str, count: int,
+                      properties: list[str] | None) -> object:
+    """Recombee's raw batch response for a MissAV page's recommendations,
+    with *properties* of each item (None: all of them)."""
     item_id = _missav_item_id(url)
     if not item_id:
         raise HTTPException(
             status_code=400, detail='could not extract item id from url')
 
+    params = {
+        'targetUserId': 'anonymous',
+        'count': count,
+        'scenario': 'mobile-watch-next',
+        'returnProperties': True,
+        'cascadeCreate': True,
+    }
+    if properties is not None:
+        params['includedProperties'] = properties
+    return _recombee_batch(f'/recomms/items/{item_id}/items/', params,
+                           'related', item_id)
+
+
+def _recombee_search(query: str, count: int) -> object:
+    """Recombee's raw batch response for a keyword search (what MissAV's own
+    search box uses), with all properties of each item."""
+    return _recombee_batch('/search/users/anonymous/items/', {
+        'searchQuery': query,
+        'count': count,
+        'cascadeCreate': True,
+        'returnProperties': True,
+    }, 'search', query)
+
+
+def _recombee_batch(path: str, params: dict, what: str, subject: str) -> object:
     body = {
-        'requests': [{
-            'method': 'POST',
-            'path': f'/recomms/items/{item_id}/items/',
-            'params': {
-                'targetUserId': 'anonymous',
-                'count': count,
-                'scenario': 'mobile-watch-next',
-                'returnProperties': True,
-                'includedProperties': ['title_cn', 'duration', 'dm',
-                                       *store.VERSION_FLAGS],
-                'cascadeCreate': True,
-            },
-        }],
+        'requests': [{'method': 'POST', 'path': path, 'params': params}],
         'distinctRecomms': True,
     }
-
     try:
         resp = requests.post(_recombee_url('/batch/'), json=body, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json()
     except requests.RequestException as exc:
-        logger.warning('recombee related fetch failed for %s: %s', item_id, exc)
+        logger.warning('recombee %s fetch failed for %s: %s', what, subject, exc)
         raise HTTPException(
-            status_code=502, detail=f'related fetch failed: {exc}') from exc
+            status_code=502, detail=f'{what} fetch failed: {exc}') from exc
 
-    return _annotate_listing(site, _parse_recombee_batch(data), prefetch)
+
+def _parse_recombee_details(data) -> list[dict]:
+    """video_details rows (see store.save_details) from a Recombee batch
+    response fetched with all properties."""
+    details = []
+    for item in _recombee_recomms(data):
+        item_id = item.get('id') or item.get('code')
+        if not item_id:
+            continue
+        props = item.get('values', item)
+        title_cn = props.get('title_cn') or ''
+        details.append({
+            'url': f'https://missav.ai/cn/{item_id}',
+            'code': store.video_code(item_id),
+            'description': props.get('description') or title_cn,
+            'title': props.get('title') or '',
+            'title_cn': title_cn,
+            'title_zh': props.get('title_zh') or '',
+            'thumbnail': f'https://fourhoi.com/{item_id}/cover-t.jpg',
+            **{flag: props[flag] if isinstance(props.get(flag), bool) else None
+               for flag in store.DETAIL_FLAGS},
+            **{key: props.get(key) for key in (*store.DETAIL_LISTS, 'duration',
+                                                'released_at', 'type')},
+        })
+    return details
+
+
+def _related_full(url: str, count: int = 12) -> tuple[list[dict], list[str]]:
+    """_related_videos for a MissAV page that also stores every item's full
+    properties in video_details: (annotated videos, URLs new to that table)."""
+    return _store_full(_recombee_related(url, count, None), url)
+
+
+def _search_full(query: str, count: int = 12) -> tuple[list[dict], list[str]]:
+    """_related_full for a Recombee keyword search."""
+    return _store_full(_recombee_search(query, count), query)
+
+
+def _store_full(data, subject: str) -> tuple[list[dict], list[str]]:
+    videos = _annotate_listing('missav', _parse_recombee_batch(data), prefetch=False)
+    # Only what survived annotation: removed videos stay out of this table too.
+    live = {v['url'] for v in videos if v.get('url')}
+    details = [d for d in _parse_recombee_details(data)
+               if store.normalize_url(d['url'])[0] in live]
+    try:
+        new = store.save_details('missav', details)
+    except Exception:
+        logger.exception('store write failed for video details of %s', subject)
+        raise HTTPException(status_code=503, detail='video details store failed')
+    return videos, new
 
 
 @app.get('/api/browse/{site}/related')
@@ -707,11 +779,18 @@ def browse_related(
 # whenever the user's own browsing has queued something.
 
 CRAWL_LIMIT = int(os.environ.get('RESOLVER_CRAWL_LIMIT', '10000'))
-_CRAWL_PREFIX = 'crawl:'
 
 
 class _Crawler:
-    def __init__(self):
+    def __init__(self, prefix: str, full: bool = False):
+        """With *full*, each related fetch asks Recombee for every property
+        and stores them in video_details; the limit then counts videos new
+        to that table (their page detail is still queued when missing). A
+        seed then starts with a Recombee search for its code, which also
+        stores the seed itself (related never returns it) and its variant
+        pages, and walks those too."""
+        self._prefix = prefix
+        self._full = full
         self._lock = threading.Lock()
         # Canonical URLs already visited this process, so the graph's many
         # cycles (A related to B related to A) aren't walked twice.
@@ -727,6 +806,8 @@ class _Crawler:
             self._seen.add(store.normalize_url(url)[0])
         if _needs_detail(url):
             _prefetcher.enqueue_background(url)
+        if self._full:
+            self._schedule(site, url, search=True)
         return self._schedule(site, url)
 
     def status(self) -> dict:
@@ -736,19 +817,29 @@ class _Crawler:
                     'seen': len(self._seen), 'queued': main,
                     'queued_background': background}
 
-    def _schedule(self, site: str, url: str) -> bool:
+    def _schedule(self, site: str, url: str, search: bool = False) -> bool:
+        kind = 'search:' if search else ''
         return _prefetcher.enqueue_background(
-            f'{_CRAWL_PREFIX}{url}', lambda: self._visit(site, url))
+            f'{self._prefix}{kind}{url}', lambda: self._visit(site, url, search))
 
-    def _visit(self, site: str, url: str):
+    def _visit(self, site: str, url: str, search: bool = False):
         try:
-            videos = _related_videos(site, url, from_user=False, prefetch=False)
+            if search:
+                # The code, not the page slug: finds all of its pages.
+                videos, new_details = _search_full(
+                    store.video_code(_missav_item_id(url) or '').lower())
+            elif self._full:
+                videos, new_details = _related_full(url)
+            else:
+                videos, new_details = _related_videos(
+                    site, url, from_user=False, prefetch=False), []
         except HTTPException as exc:
             if exc.status_code >= 500:
                 # Blocked/network: try this page again after the backoff
                 # rather than losing its branch (or, for a seed, the crawl).
-                self._schedule(site, url)
+                self._schedule(site, url, search)
             raise
+        new_details = set(new_details)
 
         # The listing rows were just saved, so "already in the DB" means a
         # detail was scraped before: those skip the detail queue and don't
@@ -759,15 +850,20 @@ class _Crawler:
         with self._lock:
             for new_url in urls:
                 key = store.normalize_url(new_url)[0]
-                if key in self._seen:
-                    continue
+                seen = key in self._seen
                 has_detail = store.has_detail(known.get(new_url))
-                if not has_detail:
+                # A URL is new to video_details only once, so in full mode it
+                # counts even if already seen (the seed, found by its search).
+                counts = key in new_details if self._full else not (seen or has_detail)
+                if counts:
                     if self._remaining <= 0:
                         continue
                     self._remaining -= 1
                     self._found += 1
-                    fresh.append(new_url)
+                    if not (seen or has_detail):
+                        fresh.append(new_url)
+                if seen:
+                    continue
                 self._seen.add(key)
                 walk.append(new_url)
             done = self._remaining <= 0
@@ -779,12 +875,13 @@ class _Crawler:
         if done:
             # Enough found: pending related fetches would only find more.
             dropped = _prefetcher.drop_background(
-                lambda key: key.startswith(_CRAWL_PREFIX))
+                lambda key: key.startswith(self._prefix))
             logger.info('crawl reached its limit (%d found); dropped %d pending'
                         ' related fetches', self._found, dropped)
 
 
-_crawler = _Crawler()
+_crawler = _Crawler('crawl:')
+_full_crawler = _Crawler('crawl-full:', full=True)
 
 
 class CrawlRequest(BaseModel):
@@ -792,10 +889,7 @@ class CrawlRequest(BaseModel):
     limit: int | None = None
 
 
-@app.post('/api/crawl')
-def crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
-    """Queue a seed video for the related crawl (see _Crawler)."""
-    _check_api_key(x_api_key)
+def _add_crawl_seed(crawler: _Crawler, req: CrawlRequest) -> dict:
     url = (req.url or '').strip()
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
@@ -811,15 +905,38 @@ def crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
             status_code=400, detail='could not extract item id from url')
 
     limit = CRAWL_LIMIT if req.limit is None else max(0, req.limit)
-    seed_queued = _crawler.add_seed(site, url, limit)
-    logger.info('crawl seed %s (limit %d)', url, limit)
-    return {'ok': True, 'seed_queued': seed_queued, **_crawler.status()}
+    seed_queued = crawler.add_seed(site, url, limit)
+    logger.info('%sseed %s (limit %d)', crawler._prefix, url, limit)
+    return {'ok': True, 'seed_queued': seed_queued, **crawler.status()}
+
+
+@app.post('/api/crawl')
+def crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
+    """Queue a seed video for the related crawl (see _Crawler)."""
+    _check_api_key(x_api_key)
+    return _add_crawl_seed(_crawler, req)
 
 
 @app.get('/api/crawl')
 def crawl_status(x_api_key: str | None = Header(default=None)):
     _check_api_key(x_api_key)
     return _crawler.status()
+
+
+@app.post('/api/crawl/full')
+def full_crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
+    """Like POST /api/crawl, but starts with a Recombee search for the
+    seed's code, and every video found (seed included) gets its full
+    Recombee properties stored in video_details (GET /api/video-details);
+    limit counts videos new to that table."""
+    _check_api_key(x_api_key)
+    return _add_crawl_seed(_full_crawler, req)
+
+
+@app.get('/api/crawl/full')
+def full_crawl_status(x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    return _full_crawler.status()
 
 
 @app.get('/api/videos')
@@ -861,6 +978,62 @@ def remove_video(url: str, x_api_key: str | None = Header(default=None)):
     if not url:
         raise HTTPException(status_code=400, detail='url is required')
     if not store.remove(url):
+        raise HTTPException(status_code=404, detail='video not found')
+    return {'ok': True}
+
+
+def _detail_flags(row: dict) -> dict:
+    return {flag: None if row.get(flag) is None else bool(row[flag])
+            for flag in store.DETAIL_FLAGS}
+
+
+@app.get('/api/video-details')
+def list_video_details(
+        page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
+        site: str | None = None, deleted: bool = False,
+        search: str | None = None,
+        x_api_key: str | None = Header(default=None)):
+    """Rows of video_details (filled by /api/crawl/full), newest first;
+    deleted/search as for /api/videos (search also matches title_cn and
+    title_zh). resolved_url is as last scraped and may have expired:
+    resolved_valid says whether it is still usable."""
+    _check_api_key(x_api_key)
+    rows, total = store.list_details_page(page, size, site or None, deleted, search)
+    videos = [{
+        'id': row['id'],
+        'site': row['site'],
+        'code': row['code'],
+        'url': row['url'],
+        'description': row['description'],
+        'title': row['title'],
+        'title_cn': row['title_cn'],
+        'title_zh': row['title_zh'],
+        **_detail_flags(row),
+        **store.detail_row_lists(row),
+        'duration': row['duration'],
+        'released_at': row['released_at'],
+        'type': row['type'],
+        'thumbnail': row['thumbnail'],
+        'resolved_url': row['resolved_url'],
+        'resolved_expires': row['resolved_expires'],
+        'resolved_valid': store.has_valid_resolved_url(row),
+        'headers': store.row_headers(row),
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'deleted_at': row['deleted_at'],
+    } for row in rows]
+    return {'videos': videos, 'page': page, 'size': size, 'total': total,
+            'pages': (total + size - 1) // size}
+
+
+@app.delete('/api/video-details')
+def remove_video_details(url: str, x_api_key: str | None = Header(default=None)):
+    """Soft-delete a video_details row (the videos row is left alone)."""
+    _check_api_key(x_api_key)
+    url = (url or '').strip()
+    if not url:
+        raise HTTPException(status_code=400, detail='url is required')
+    if not store.remove_details(url):
         raise HTTPException(status_code=404, detail='video not found')
     return {'ok': True}
 
