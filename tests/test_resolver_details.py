@@ -123,7 +123,7 @@ def test_full_crawl_counts_new_detail_rows(monkeypatch):
     assert 'crawl-full:https://missav.ai/cn/sone-001' in queued
 
 
-def test_full_crawl_seed_search_stores_the_seed(monkeypatch):
+def test_full_crawl_from_keyword_search(monkeypatch):
     search_result = {'responses': [{'json': {'recomms': [
         {'id': 'mida-278', 'values': {'title_cn': '种子', 'actresses': ['女A']}},
         {'id': 'mida-278-uncensored-leak', 'values': {'is_uncensored_leak': True}},
@@ -143,19 +143,35 @@ def test_full_crawl_seed_search_stores_the_seed(monkeypatch):
     monkeypatch.setattr(resolver_app._prefetcher, 'enqueue_background',
                         lambda key, call=None: calls.setdefault(key, call) is call)
     crawler = resolver_app._Crawler('crawl-full:', full=True)
-    seed = 'https://missav.ai/cn/mida-278-chinese-subtitle'
-    crawler.add_seed('missav', seed, 10)
-
-    search_key = f'crawl-full:search:{seed}'
-    assert search_key in calls and f'crawl-full:{seed}' in calls
-    calls.pop(search_key)()
+    assert crawler.add_search('missav', '女A 巨乳', 10, 30)
+    assert not crawler.add_search('missav', '女A 巨乳', 10, 30)
+    calls.pop('crawl-full:search:女A 巨乳')()
 
     request = bodies[0]['requests'][0]
     assert request['path'] == '/search/users/anonymous/items/'
-    assert request['params'] == {'searchQuery': 'mida-278', 'count': 12,
+    assert request['params'] == {'searchQuery': '女A 巨乳', 'count': 30,
                                  'cascadeCreate': True, 'returnProperties': True}
     assert crawler.status()['found'] == 2
     rows = {r['url']: r for r in store.list_details_page(1, 10)[0]}
     assert rows['https://missav.ai/cn/mida-278']['title_cn'] == '种子'
     # Search results are walked like related ones.
+    assert 'crawl-full:https://missav.ai/cn/mida-278' in calls
     assert 'crawl-full:https://missav.ai/cn/mida-278-uncensored-leak' in calls
+
+
+def test_full_crawl_endpoint_takes_a_query(monkeypatch):
+    from fastapi import HTTPException
+
+    searches = []
+    monkeypatch.setattr(resolver_app, 'PREFETCH_ENABLED', True)
+    monkeypatch.setattr(resolver_app._full_crawler, 'add_search',
+                        lambda site, query, limit, count: searches.append(
+                            (site, query, limit, count)) or True)
+    key = resolver_app.RESOLVER_API_KEY
+    result = resolver_app.full_crawl_search(
+        resolver_app.FullCrawlRequest(query=' 三上悠亚 ', limit=5), key)
+    assert result['search_queued'] is True
+    assert searches == [('missav', '三上悠亚', 5, 12)]
+    with pytest.raises(HTTPException) as exc:
+        resolver_app.full_crawl_search(resolver_app.FullCrawlRequest(query=' '), key)
+    assert exc.value.status_code == 400

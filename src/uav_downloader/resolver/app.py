@@ -785,10 +785,9 @@ class _Crawler:
     def __init__(self, prefix: str, full: bool = False):
         """With *full*, each related fetch asks Recombee for every property
         and stores them in video_details; the limit then counts videos new
-        to that table (their page detail is still queued when missing). A
-        seed then starts with a Recombee search for its code, which also
-        stores the seed itself (related never returns it) and its variant
-        pages, and walks those too."""
+        to that table (their page detail is still queued when missing). It
+        is started from a Recombee keyword search (add_search) rather than
+        a seed page: every video the search finds is stored and walked."""
         self._prefix = prefix
         self._full = full
         self._lock = threading.Lock()
@@ -806,9 +805,16 @@ class _Crawler:
             self._seen.add(store.normalize_url(url)[0])
         if _needs_detail(url):
             _prefetcher.enqueue_background(url)
-        if self._full:
-            self._schedule(site, url, search=True)
         return self._schedule(site, url)
+
+    def add_search(self, site: str, query: str, limit: int, count: int) -> bool:
+        """Start (or top up) a full crawl from the *count* videos a Recombee
+        search for *query* finds. False if that search is already queued."""
+        with self._lock:
+            self._remaining = limit
+        return _prefetcher.enqueue_background(
+            f'{self._prefix}search:{query}',
+            lambda: self._visit(site, query, search_count=count))
 
     def status(self) -> dict:
         main, background = _prefetcher.pending()
@@ -817,17 +823,16 @@ class _Crawler:
                     'seen': len(self._seen), 'queued': main,
                     'queued_background': background}
 
-    def _schedule(self, site: str, url: str, search: bool = False) -> bool:
-        kind = 'search:' if search else ''
+    def _schedule(self, site: str, url: str) -> bool:
         return _prefetcher.enqueue_background(
-            f'{self._prefix}{kind}{url}', lambda: self._visit(site, url, search))
+            f'{self._prefix}{url}', lambda: self._visit(site, url))
 
-    def _visit(self, site: str, url: str, search: bool = False):
+    def _visit(self, site: str, url: str, search_count: int | None = None):
+        """Walk *url*'s related, or with *search_count* the results of a
+        search for *url* (then a query)."""
         try:
-            if search:
-                # The code, not the page slug: finds all of its pages.
-                videos, new_details = _search_full(
-                    store.video_code(_missav_item_id(url) or '').lower())
+            if search_count is not None:
+                videos, new_details = _search_full(url, search_count)
             elif self._full:
                 videos, new_details = _related_full(url)
             else:
@@ -837,7 +842,10 @@ class _Crawler:
             if exc.status_code >= 500:
                 # Blocked/network: try this page again after the backoff
                 # rather than losing its branch (or, for a seed, the crawl).
-                self._schedule(site, url, search)
+                if search_count is not None:
+                    self.add_search(site, url, self._remaining, search_count)
+                else:
+                    self._schedule(site, url)
             raise
         new_details = set(new_details)
 
@@ -853,7 +861,7 @@ class _Crawler:
                 seen = key in self._seen
                 has_detail = store.has_detail(known.get(new_url))
                 # A URL is new to video_details only once, so in full mode it
-                # counts even if already seen (the seed, found by its search).
+                # counts even if already seen.
                 counts = key in new_details if self._full else not (seen or has_detail)
                 if counts:
                     if self._remaining <= 0:
@@ -923,14 +931,34 @@ def crawl_status(x_api_key: str | None = Header(default=None)):
     return _crawler.status()
 
 
+class FullCrawlRequest(BaseModel):
+    query: str
+    limit: int | None = None
+    # How many results the starting search returns.
+    count: int = 12
+
+
 @app.post('/api/crawl/full')
-def full_crawl_seed(req: CrawlRequest, x_api_key: str | None = Header(default=None)):
-    """Like POST /api/crawl, but starts with a Recombee search for the
-    seed's code, and every video found (seed included) gets its full
-    Recombee properties stored in video_details (GET /api/video-details);
-    limit counts videos new to that table."""
+def full_crawl_search(req: FullCrawlRequest,
+                      x_api_key: str | None = Header(default=None)):
+    """Like POST /api/crawl, but seeded by a MissAV (Recombee) search for
+    *query* - a code, actress, title keyword... - instead of a page, and
+    every video found gets its full Recombee properties stored in
+    video_details (GET /api/video-details); limit counts videos new to that
+    table."""
     _check_api_key(x_api_key)
-    return _add_crawl_seed(_full_crawler, req)
+    query = (req.query or '').strip()
+    if not query:
+        raise HTTPException(status_code=400, detail='query is required')
+    if not PREFETCH_ENABLED:
+        raise HTTPException(status_code=409, detail='prefetch is disabled')
+    if not 1 <= req.count <= 100:
+        raise HTTPException(status_code=400, detail='count must be 1-100')
+
+    limit = CRAWL_LIMIT if req.limit is None else max(0, req.limit)
+    search_queued = _full_crawler.add_search('missav', query, limit, req.count)
+    logger.info('full crawl search %r (limit %d)', query, limit)
+    return {'ok': True, 'search_queued': search_queued, **_full_crawler.status()}
 
 
 @app.get('/api/crawl/full')
