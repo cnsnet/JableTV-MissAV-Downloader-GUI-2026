@@ -723,6 +723,8 @@ def _parse_recombee_details(data) -> list[dict]:
             'title_cn': title_cn,
             'title_zh': props.get('title_zh') or '',
             'thumbnail': f'https://fourhoi.com/{item_id}/cover-t.jpg',
+            # Not every video has one; clients treat a 404 as no preview.
+            'preview': f'https://fourhoi.com/{item_id}/preview.mp4',
             **{flag: props[flag] if isinstance(props.get(flag), bool) else None
                for flag in store.DETAIL_FLAGS},
             **{key: props.get(key) for key in (*store.DETAIL_LISTS, 'duration',
@@ -1042,6 +1044,7 @@ def list_video_details(
         'released_at': row['released_at'],
         'type': row['type'],
         'thumbnail': row['thumbnail'],
+        'preview': row['preview'],
         'resolved_url': row['resolved_url'],
         'resolved_expires': row['resolved_expires'],
         'resolved_valid': store.has_valid_resolved_url(row),

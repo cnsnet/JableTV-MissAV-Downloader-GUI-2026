@@ -43,6 +43,8 @@ def test_save_details_new_then_refresh():
         'actors': ['男A'], 'actresses': ['女A', '女B'], 'genres': ['巨乳']}
     assert (row['duration'], row['released_at'], row['type']) == (
         7260, '2022-01-01', 'censored')
+    assert row['thumbnail'] == 'https://fourhoi.com/ipx-771-uncensored-leak/cover-t.jpg'
+    assert row['preview'] == 'https://fourhoi.com/ipx-771-uncensored-leak/preview.mp4'
     other = next(r for r in rows if r['code'] == 'SONE-001')
     assert json.loads(other['actresses']) == ['女C']
     assert other['duration'] == 3723
@@ -55,6 +57,28 @@ def test_save_details_new_then_refresh():
     again = next(r for r in store.list_details_page(1, 10)[0] if r['code'] == 'IPX-771')
     assert again['title_cn'] == '新标题'
     assert again['id'] == row['id']
+
+
+def test_migration_adds_preview_from_thumbnail():
+    import sqlite3
+
+    with sqlite3.connect(store.DB_PATH) as conn:
+        conn.execute("""CREATE TABLE video_details (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, site TEXT NOT NULL,
+            code TEXT NOT NULL DEFAULT '', url TEXT NOT NULL UNIQUE,
+            thumbnail TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL)""")
+        conn.executemany(
+            'INSERT INTO video_details (site, code, url, thumbnail, created_at, updated_at)'
+            ' VALUES (?, ?, ?, ?, 0, 0)',
+            [('missav', 'IPX-805', 'https://missav.ai/cn/ipx-805',
+              'https://fourhoi.com/ipx-805/cover-t.jpg'),
+             ('missav', 'X-1', 'https://missav.ai/cn/x-1', '')])
+        conn.execute('PRAGMA user_version = 4')
+
+    with store._connect() as conn:
+        previews = dict(conn.execute('SELECT code, preview FROM video_details'))
+    assert previews == {'IPX-805': 'https://fourhoi.com/ipx-805/preview.mp4', 'X-1': ''}
 
 
 def test_resolved_url_follows_videos_table():

@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS video_details (
     released_at      TEXT,
     type             TEXT,
     thumbnail        TEXT NOT NULL DEFAULT '',
+    preview          TEXT NOT NULL DEFAULT '',
     resolved_url     TEXT,
     resolved_expires INTEGER,
     headers          TEXT,
@@ -113,8 +114,8 @@ CREATE INDEX IF NOT EXISTS idx_video_details_created ON video_details (created_a
 
 # PRAGMA user_version: 1 = id is the URL slug (was the upper-case code),
 # 2 = deleted_at column, 3 = has_chinese_subtitle/is_uncensored_leak columns,
-# 4 = MissAV URLs without the /dm<N>/ prefix.
-_SCHEMA_VERSION = 4
+# 4 = MissAV URLs without the /dm<N>/ prefix, 5 = video_details.preview.
+_SCHEMA_VERSION = 5
 
 VERSION_FLAGS = ('has_chinese_subtitle', 'is_uncensored_leak')
 
@@ -160,6 +161,13 @@ def _migrate(conn: sqlite3.Connection):
                      " AND id LIKE '%-uncensored-leak'")
     if version < 4:
         _merge_missav_dm_rows(conn)
+    if version < 5:
+        detail_columns = {row[1] for row in conn.execute('PRAGMA table_info(video_details)')}
+        if 'preview' not in detail_columns:
+            conn.execute("ALTER TABLE video_details ADD COLUMN preview TEXT NOT NULL DEFAULT ''")
+        # The preview clip sits next to the cover the row already has.
+        conn.execute("UPDATE video_details SET preview = replace(thumbnail, '/cover-t.jpg', '/preview.mp4')"
+                     " WHERE preview = '' AND thumbnail LIKE 'https://fourhoi.com/%/cover-t.jpg'")
     conn.execute(f'PRAGMA user_version = {_SCHEMA_VERSION}')
 
 
@@ -455,7 +463,7 @@ DETAIL_LISTS = ('actors', 'actresses', 'genres')
 
 _DETAIL_COLUMNS = ('site', 'code', 'url', 'description', 'title', 'title_cn',
                    'title_zh', *DETAIL_FLAGS, *DETAIL_LISTS, 'duration',
-                   'released_at', 'type', 'thumbnail')
+                   'released_at', 'type', 'thumbnail', 'preview')
 # What a re-seen item overwrites: everything but its identity.
 _DETAIL_REFRESHED = [c for c in _DETAIL_COLUMNS if c not in ('site', 'url')]
 
@@ -516,7 +524,8 @@ def save_details(site: str, items: list[dict]) -> list[str]:
             'code': item.get('code') or video_code(url_slug(url)),
             'url': url,
             **{c: _text(item.get(c))
-               for c in ('description', 'title', 'title_cn', 'title_zh', 'thumbnail')},
+               for c in ('description', 'title', 'title_cn', 'title_zh',
+                         'thumbnail', 'preview')},
             **{c: _flag(item.get(c)) for c in DETAIL_FLAGS},
             **{c: json.dumps(_string_list(item.get(c)), ensure_ascii=False)
                for c in DETAIL_LISTS},
