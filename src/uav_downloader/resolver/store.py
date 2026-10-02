@@ -17,14 +17,18 @@ domain first, so jable.tv / fs1.app mirror links share a row, and MissAV's
 optional /dm<N>/ routing prefix is dropped (/dm39/cn/ipx-771-uncensored-leak
 and /cn/ipx-771-uncensored-leak are the same page).
 
-id is the URL's last path segment, lower-cased (ipx-771,
-ipx-771-uncensored-leak), so every page has its own. It always starts with
-the video code, which is how code lookups find all pages of one code.
+slug is the URL's last path segment, lower-cased (ipx-771,
+ipx-771-uncensored-leak), so every page has its own; the API calls it id.
+It always starts with the video code, which is how code lookups find all
+pages of one code. The table's own id is just a row number.
 
 has_chinese_subtitle/is_uncensored_leak are MissAV's per-page flags (its
 中文字幕/无码影片 badges), what actually tells a code's pages apart: the
 suffix alone doesn't, ipx-771 itself is often the subtitled one. NULL means
 not known yet (Jable pages, or MissAV rows not seen since the columns came).
+
+A full crawl adds MissAV's Recombee item properties (actors, genres,
+duration, ...) to the same rows, see save_details.
 """
 
 import json
@@ -54,40 +58,20 @@ _MISSAV_DM_VIDEO_RE = re.compile(
 
 _SCHEMA = '''
 CREATE TABLE IF NOT EXISTS videos (
-    url              TEXT PRIMARY KEY,
-    site             TEXT NOT NULL,
-    id               TEXT NOT NULL DEFAULT '',
-    title            TEXT NOT NULL DEFAULT '',
-    description      TEXT NOT NULL DEFAULT '',
-    thumbnail        TEXT NOT NULL DEFAULT '',
-    resolved_url     TEXT,
-    resolved_expires INTEGER,
-    headers          TEXT,
-    -- 1 once the Jable->MissAV Chinese-title lookup has run (hit or miss),
-    -- so a later re-resolve doesn't repeat it.
-    title_checked    INTEGER NOT NULL DEFAULT 0,
-    has_chinese_subtitle INTEGER,
-    is_uncensored_leak   INTEGER,
-    -- Set by remove(): the row is kept (listings won't re-add it) but the
-    -- video is no longer returned anywhere except list_page(deleted=True).
-    deleted_at       INTEGER,
-    created_at       INTEGER NOT NULL,
-    updated_at       INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_videos_site_id ON videos (site, id);
-CREATE INDEX IF NOT EXISTS idx_videos_created ON videos (created_at);
-
--- Full metadata from MissAV's Recombee item properties (see save_details),
--- one row per page like videos. actors/actresses/genres are JSON arrays.
--- resolved_url/resolved_expires/headers mirror videos' once a page scrape
--- has run for the URL.
-CREATE TABLE IF NOT EXISTS video_details (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     site             TEXT NOT NULL,
+    -- The video code (IPX-771 for ipx-771-uncensored-leak, see video_code)
+    -- and the page's own id, the URL's last path segment (see url_slug).
     code             TEXT NOT NULL DEFAULT '',
+    slug             TEXT NOT NULL DEFAULT '',
     url              TEXT NOT NULL UNIQUE,
-    description      TEXT NOT NULL DEFAULT '',
+    -- What listings show: "<CODE> <text>" (Jable's Japanese titles swapped
+    -- for MissAV's Chinese ones), and that text alone.
     title            TEXT NOT NULL DEFAULT '',
+    description      TEXT NOT NULL DEFAULT '',
+    -- MissAV's Recombee item properties (see save_details); title_ja is
+    -- its original "title". actors/actresses/genres are JSON arrays.
+    title_ja         TEXT NOT NULL DEFAULT '',
     title_cn         TEXT NOT NULL DEFAULT '',
     title_zh         TEXT NOT NULL DEFAULT '',
     has_chinese_subtitle INTEGER,
@@ -104,18 +88,26 @@ CREATE TABLE IF NOT EXISTS video_details (
     resolved_url     TEXT,
     resolved_expires INTEGER,
     headers          TEXT,
+    -- 1 once the Jable->MissAV Chinese-title lookup has run (hit or miss),
+    -- so a later re-resolve doesn't repeat it.
+    title_checked    INTEGER NOT NULL DEFAULT 0,
+    -- When the Recombee properties were last stored; NULL if never.
+    details_at       INTEGER,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL,
+    -- Set by remove(): the row is kept (listings won't re-add it) but the
+    -- video is no longer returned anywhere except list_page(deleted=True).
     deleted_at       INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_video_details_site_code ON video_details (site, code);
-CREATE INDEX IF NOT EXISTS idx_video_details_created ON video_details (created_at);
+CREATE INDEX IF NOT EXISTS idx_videos_site_slug ON videos (site, slug);
+CREATE INDEX IF NOT EXISTS idx_videos_created ON videos (created_at);
 '''
 
 # PRAGMA user_version: 1 = id is the URL slug (was the upper-case code),
 # 2 = deleted_at column, 3 = has_chinese_subtitle/is_uncensored_leak columns,
-# 4 = MissAV URLs without the /dm<N>/ prefix, 5 = video_details.preview.
-_SCHEMA_VERSION = 5
+# 4 = MissAV URLs without the /dm<N>/ prefix, 5 = video_details.preview,
+# 6 = videos and video_details merged into one videos table.
+_SCHEMA_VERSION = 6
 
 VERSION_FLAGS = ('has_chinese_subtitle', 'is_uncensored_leak')
 
@@ -131,7 +123,6 @@ def _connect() -> sqlite3.Connection:
                 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute('PRAGMA journal_mode=WAL')
-                    conn.executescript(_SCHEMA)
                     _migrate(conn)
                 _initialized = True
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -139,14 +130,31 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+
+
 def _migrate(conn: sqlite3.Connection):
     version = conn.execute('PRAGMA user_version').fetchone()[0]
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    # Before version 6, videos was keyed by url with the slug in id.
+    if version < 6 and ('video_details' in tables or (
+            'videos' in tables and 'slug' not in _columns(conn, 'videos'))):
+        if 'videos' in tables:
+            _migrate_legacy_videos(conn, version)
+        _merge_tables(conn, 'videos' in tables, 'video_details' in tables)
+    conn.executescript(_SCHEMA)
+    conn.execute(f'PRAGMA user_version = {_SCHEMA_VERSION}')
+
+
+def _migrate_legacy_videos(conn: sqlite3.Connection, version: int):
+    """Bring a pre-6 videos table up to version 5."""
     if version < 1:
         rows = conn.execute('SELECT url FROM videos').fetchall()
         conn.executemany('UPDATE videos SET id = ? WHERE url = ?',
                          [(url_slug(url), url) for (url,) in rows])
-    # A new DB already got these columns from _SCHEMA.
-    columns = {row[1] for row in conn.execute('PRAGMA table_info(videos)')}
+    columns = _columns(conn, 'videos')
     if version < 2 and 'deleted_at' not in columns:
         conn.execute('ALTER TABLE videos ADD COLUMN deleted_at INTEGER')
     if version < 3:
@@ -161,14 +169,6 @@ def _migrate(conn: sqlite3.Connection):
                      " AND id LIKE '%-uncensored-leak'")
     if version < 4:
         _merge_missav_dm_rows(conn)
-    if version < 5:
-        detail_columns = {row[1] for row in conn.execute('PRAGMA table_info(video_details)')}
-        if 'preview' not in detail_columns:
-            conn.execute("ALTER TABLE video_details ADD COLUMN preview TEXT NOT NULL DEFAULT ''")
-        # The preview clip sits next to the cover the row already has.
-        conn.execute("UPDATE video_details SET preview = replace(thumbnail, '/cover-t.jpg', '/preview.mp4')"
-                     " WHERE preview = '' AND thumbnail LIKE 'https://fourhoi.com/%/cover-t.jpg'")
-    conn.execute(f'PRAGMA user_version = {_SCHEMA_VERSION}')
 
 
 def _merge_missav_dm_rows(conn: sqlite3.Connection):
@@ -205,6 +205,83 @@ def _merge_missav_dm_rows(conn: sqlite3.Connection):
             conn.execute('DELETE FROM videos WHERE url = ?', (url,))
         else:
             conn.execute('UPDATE videos SET url = ? WHERE url = ?', (canonical, url))
+
+
+_COVER_RE = re.compile(r'^(https://fourhoi\.com/.+)/cover-t\.jpg$')
+
+
+def _merge_tables(conn: sqlite3.Connection, has_videos: bool, has_details: bool):
+    """Rebuild the pre-6 videos (one row per page) and video_details
+    (Recombee properties of the same pages) as the one videos table.
+    video_details rows keep their id. On a URL in both, videos'
+    title/description/resolved_url win, as listings and scrapes wrote them
+    there, the rest is video_details' (videos' only fills its gaps), and a
+    removal from either table sticks."""
+    conn.row_factory = sqlite3.Row
+    merged: dict[str, dict] = {}
+    if has_details:
+        for d in conn.execute('SELECT * FROM video_details ORDER BY id'):
+            d = dict(d)
+            slug = url_slug(d['url'])
+            preview = d.get('preview') or ''
+            cover = _COVER_RE.match(d.get('thumbnail') or '')
+            if not preview and cover:
+                preview = cover.group(1) + '/preview.mp4'
+            merged[d['url']] = {
+                **d,
+                'slug': slug,
+                'title': f'{slug.upper()} {d.get("title_cn") or ""}'.strip(),
+                'title_ja': d.get('title') or '',
+                'preview': preview,
+                'details_at': d['updated_at'],
+            }
+    if has_videos:
+        for v in conn.execute('SELECT * FROM videos ORDER BY created_at, url'):
+            v = dict(v)
+            row = merged.get(v['url'])
+            if row is None:
+                merged[v['url']] = row = {
+                    'site': v['site'], 'url': v['url'], 'code': video_code(v['id']),
+                    'thumbnail': v['thumbnail'],
+                    **{flag: v.get(flag) for flag in VERSION_FLAGS},
+                    'created_at': v['created_at'], 'updated_at': v['updated_at'],
+                }
+            else:
+                row['thumbnail'] = row.get('thumbnail') or v['thumbnail']
+                for flag in VERSION_FLAGS:
+                    if row.get(flag) is None:
+                        row[flag] = v.get(flag)
+                row['created_at'] = min(row['created_at'], v['created_at'])
+                row['updated_at'] = max(row['updated_at'], v['updated_at'])
+            row.update(slug=v['id'], title=v['title'], description=v['description'],
+                       title_checked=v['title_checked'])
+            if v.get('deleted_at') is not None:
+                row['deleted_at'] = v['deleted_at']
+            if v.get('resolved_url'):
+                row.update(resolved_url=v['resolved_url'],
+                           resolved_expires=v['resolved_expires'],
+                           headers=v['headers'])
+    conn.row_factory = None
+    # One transaction (executescript would commit halfway), so a crash
+    # leaves the old tables to merge again on the next start.
+    conn.commit()
+    conn.execute('BEGIN')
+    conn.execute('DROP TABLE IF EXISTS videos')
+    conn.execute('DROP TABLE IF EXISTS video_details')
+    statement = ''
+    for line in _SCHEMA.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ''
+    columns = _columns(conn, 'videos')
+    # Rows that have an id first, so AUTOINCREMENT numbers the rest after them.
+    for row in sorted(merged.values(), key=lambda r: r.get('id') is None):
+        row = {c: value for c, value in row.items()
+               if c in columns and not (c == 'id' and value is None)}
+        conn.execute(f'INSERT INTO videos ({", ".join(row)})'
+                     f' VALUES ({", ".join("?" * len(row))})', list(row.values()))
+    conn.commit()
 
 
 def url_slug(url: str) -> str:
@@ -248,7 +325,8 @@ def save_listing(site: str, videos: list[dict]):
         if not v.get('url'):
             continue
         url, _ = normalize_url(v['url'])
-        rows.append((url, site, url_slug(url), v.get('title', ''),
+        slug = url_slug(url)
+        rows.append((url, site, video_code(slug), slug, v.get('title', ''),
                      v.get('description', ''), v.get('thumbnail', ''),
                      _flag(v.get('has_chinese_subtitle')),
                      _flag(v.get('is_uncensored_leak')), now, now))
@@ -256,9 +334,9 @@ def save_listing(site: str, videos: list[dict]):
         return
     with _connect() as conn:
         conn.executemany(
-            'INSERT OR IGNORE INTO videos (url, site, id, title, description,'
+            'INSERT OR IGNORE INTO videos (url, site, code, slug, title, description,'
             ' thumbnail, has_chinese_subtitle, is_uncensored_leak, created_at,'
-            ' updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             rows)
         # Fill a thumbnail the row was first stored without, and take the
         # listing's flags (the site's current view of the page) when it has them.
@@ -267,7 +345,7 @@ def save_listing(site: str, videos: list[dict]):
             ' has_chinese_subtitle = COALESCE(?, has_chinese_subtitle),'
             ' is_uncensored_leak = COALESCE(?, is_uncensored_leak)'
             ' WHERE url = ?',
-            [(r[5], r[6], r[7], r[0]) for r in rows])
+            [(r[6], r[7], r[8], r[0]) for r in rows])
 
 
 def get_many(urls: list[str]) -> dict[str, dict]:
@@ -302,21 +380,17 @@ def _compact(column: str) -> str:
     return f"REPLACE(REPLACE(LOWER({column}), '-', ''), '_', '')"
 
 
+_TITLE_COLUMNS = ('title', 'title_ja', 'title_cn', 'title_zh')
+
+
 def list_page(page: int, size: int, site: str | None = None,
               deleted: bool = False,
               search: str | None = None) -> tuple[list[dict], int]:
     """One page of stored rows, newest first, plus their count: the live
     ones, or with *deleted* the removed ones (most recently removed first).
-    *search* matches the code anywhere in the id (ipx -> ipx-789,
-    ipx-789-chinese-subtitle ...) or the title; exact and prefix code
-    matches come first."""
-    return _list_rows('videos', 'id', ('title',),
-                      page, size, site, deleted, search)
-
-
-def _list_rows(table: str, code_column: str, title_columns: tuple[str, ...],
-               page: int, size: int, site: str | None, deleted: bool,
-               search: str | None) -> tuple[list[dict], int]:
+    *search* matches the code anywhere in the slug (ipx -> ipx-789,
+    ipx-789-chinese-subtitle ...) or any of the titles; exact and prefix
+    code matches come first."""
     if deleted:
         where, order = 'WHERE deleted_at IS NOT NULL', 'deleted_at DESC, url'
     else:
@@ -327,10 +401,10 @@ def _list_rows(table: str, code_column: str, title_columns: tuple[str, ...],
     search = (search or '').strip()
     if search:
         code = re.sub(r'[^0-9a-z]', '', search.lower())
-        conds = [f"{column} LIKE ? ESCAPE '\\'" for column in title_columns]
-        args.extend([f'%{_like_escape(search)}%'] * len(title_columns))
+        conds = [f"{column} LIKE ? ESCAPE '\\'" for column in _TITLE_COLUMNS]
+        args.extend([f'%{_like_escape(search)}%'] * len(_TITLE_COLUMNS))
         if code:
-            compact = _compact(code_column)
+            compact = _compact('slug')
             conds.append(f'{compact} LIKE ?')
             args.append(f'%{code}%')
             order = (f'CASE WHEN {compact} = ? THEN 0'
@@ -338,25 +412,38 @@ def _list_rows(table: str, code_column: str, title_columns: tuple[str, ...],
             order_args = [code, f'{code}%']
         where += f' AND ({" OR ".join(conds)})'
     with _connect() as conn:
-        total = conn.execute(f'SELECT COUNT(*) FROM {table} {where}', args).fetchone()[0]
+        total = conn.execute(f'SELECT COUNT(*) FROM videos {where}', args).fetchone()[0]
         cur = conn.execute(
-            f'SELECT * FROM {table} {where} ORDER BY {order}'
+            f'SELECT * FROM videos {where} ORDER BY {order}'
             ' LIMIT ? OFFSET ?', [*args, *order_args, size, (page - 1) * size])
         return [dict(row) for row in cur], total
 
 
-def _remove_row(table: str, url: str) -> bool:
+def remove(url: str) -> bool:
+    """Soft-delete a row; False if the URL isn't stored or already removed."""
     canonical, _ = normalize_url(url)
     with _connect() as conn:
         cur = conn.execute(
-            f'UPDATE {table} SET deleted_at = ? WHERE url = ? AND deleted_at IS NULL',
+            'UPDATE videos SET deleted_at = ? WHERE url = ? AND deleted_at IS NULL',
             (int(time.time()), canonical))
         return cur.rowcount > 0
 
 
-def remove(url: str) -> bool:
-    """Soft-delete a row; False if the URL isn't stored or already removed."""
-    return _remove_row('videos', url)
+_UNRESOLVED = 'site = ? AND resolved_url IS NULL AND deleted_at IS NULL'
+
+
+def unresolved_urls(site: str) -> list[str]:
+    """Live rows of *site* whose page was never scraped, oldest first."""
+    with _connect() as conn:
+        return [row[0] for row in conn.execute(
+            f'SELECT url FROM videos WHERE {_UNRESOLVED} ORDER BY created_at, url',
+            (site,))]
+
+
+def count_unresolved(site: str) -> int:
+    with _connect() as conn:
+        return conn.execute(f'SELECT COUNT(*) FROM videos WHERE {_UNRESOLVED}',
+                            (site,)).fetchone()[0]
 
 
 def is_removed(row: dict | None) -> bool:
@@ -389,16 +476,17 @@ def save_detail(url: str, *, title: str, description: str,
                 is_uncensored_leak: bool | None = None):
     """Store a scraped page. A flag left None keeps what the row has."""
     canonical, site = normalize_url(url)
+    slug = url_slug(canonical)
     now = int(time.time())
     with _connect() as conn:
         conn.execute(
-            '''INSERT INTO videos (url, site, id, title, description, thumbnail,
-                   resolved_url, resolved_expires, headers, title_checked,
-                   has_chinese_subtitle, is_uncensored_leak,
+            '''INSERT INTO videos (url, site, code, slug, title, description,
+                   thumbnail, resolved_url, resolved_expires, headers,
+                   title_checked, has_chinese_subtitle, is_uncensored_leak,
                    created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(url) DO UPDATE SET
-                   id = excluded.id,
+                   slug = excluded.slug,
                    title = excluded.title,
                    description = excluded.description,
                    thumbnail = CASE WHEN videos.thumbnail = ''
@@ -412,24 +500,19 @@ def save_detail(url: str, *, title: str, description: str,
                    is_uncensored_leak = COALESCE(excluded.is_uncensored_leak,
                                                  videos.is_uncensored_leak),
                    updated_at = excluded.updated_at''',
-            (canonical, site, url_slug(canonical), title, description, thumbnail,
+            (canonical, site, video_code(slug), slug, title, description, thumbnail,
              resolved_url, resolved_url_expiry(resolved_url),
              json.dumps(headers or {}), int(title_checked),
              _flag(has_chinese_subtitle), _flag(is_uncensored_leak), now, now))
-        conn.execute(
-            'UPDATE video_details SET resolved_url = ?, resolved_expires = ?,'
-            ' headers = ?, updated_at = ? WHERE url = ?',
-            (resolved_url, resolved_url_expiry(resolved_url),
-             json.dumps(headers or {}), now, canonical))
 
 
-# Ids only use [a-z0-9_-], so [code, code + '.') holds exactly code and
-# code-*; as one range it stays on the (site, id) index, unlike LIKE or OR.
-_CODE_RANGE = 'id >= ? AND id < ?'
+# Slugs only use [a-z0-9_-], so [code, code + '.') holds exactly code and
+# code-*; as one range it stays on the (site, slug) index, unlike LIKE or OR.
+_CODE_RANGE = 'slug >= ? AND slug < ?'
 
 
 def find_by_code(site: str, code: str) -> list[dict]:
-    """Rows for a video code, including variant pages whose id carries a
+    """Rows for a video code, including variant pages whose slug carries a
     suffix (sone-001-chinese-subtitle, ...)."""
     code = code.lower()
     with _connect() as conn:
@@ -452,20 +535,30 @@ def translated_title_for(site: str, code: str) -> str | None:
     return row['title'] if row else None
 
 
-# ── video_details ────────────────────────────────────────────────────────
-# Filled by the full related crawl from Recombee's item properties, which
-# only exist for recommended items: a seed itself gets a row once some other
-# video recommends it. Metadata is refreshed whenever an item is seen again
-# (Recombee's current view); resolved_url comes from save_detail.
+# ── Recombee properties ──────────────────────────────────────────────────
+# Filled by the related crawl from Recombee's item properties, which only
+# exist for recommended items: a seed itself gets them once some other
+# video recommends it. They are refreshed whenever an item is seen again
+# (Recombee's current view).
 
 DETAIL_FLAGS = ('has_chinese_subtitle', 'has_english_subtitle', 'is_uncensored_leak')
 DETAIL_LISTS = ('actors', 'actresses', 'genres')
 
-_DETAIL_COLUMNS = ('site', 'code', 'url', 'description', 'title', 'title_cn',
-                   'title_zh', *DETAIL_FLAGS, *DETAIL_LISTS, 'duration',
-                   'released_at', 'type', 'thumbnail', 'preview')
-# What a re-seen item overwrites: everything but its identity.
-_DETAIL_REFRESHED = [c for c in _DETAIL_COLUMNS if c not in ('site', 'url')]
+_DETAIL_COLUMNS = ('site', 'code', 'slug', 'url', 'title', 'description',
+                   'title_ja', 'title_cn', 'title_zh', *DETAIL_FLAGS,
+                   *DETAIL_LISTS, 'duration', 'released_at', 'type',
+                   'thumbnail', 'preview', 'details_at')
+# A row's listing/scrape text is what clients show, so title/description
+# only fill a gap; a flag Recombee doesn't know keeps the row's.
+_DETAIL_UPDATES = ', '.join([
+    *(f"{c} = CASE WHEN videos.{c} = '' THEN excluded.{c} ELSE videos.{c} END"
+      for c in ('title', 'description', 'thumbnail')),
+    *(f'{c} = COALESCE(excluded.{c}, videos.{c})' for c in DETAIL_FLAGS),
+    *(f'{c} = excluded.{c}'
+      for c in ('code', 'title_ja', 'title_cn', 'title_zh', *DETAIL_LISTS,
+                'duration', 'released_at', 'type', 'preview', 'details_at')),
+    'updated_at = excluded.updated_at',
+])
 
 _VARIANT_SUFFIX_RE = re.compile(
     r'-(?:uncensored-leak|chinese-subtitles?|english-subtitles?)$')
@@ -510,21 +603,27 @@ def _text(value) -> str:
 
 
 def save_details(site: str, items: list[dict]) -> list[str]:
-    """Upsert video_details rows (keys as in _DETAIL_COLUMNS; lists as
-    Python lists) and return the canonical URLs that were new. A new row
-    takes the resolved_url videos already has for its URL."""
+    """Store Recombee properties (keys as in _DETAIL_COLUMNS; lists as
+    Python lists), adding rows not stored yet, and return the canonical URLs
+    that had none before."""
     now = int(time.time())
     rows = {}
     for item in items:
         if not item.get('url'):
             continue
         url, _ = normalize_url(item['url'])
+        slug = url_slug(url)
+        title_cn = _text(item.get('title_cn'))
         row = {
             'site': site,
-            'code': item.get('code') or video_code(url_slug(url)),
+            'code': item.get('code') or video_code(slug),
+            'slug': slug,
             'url': url,
+            # Only used for a row no listing stored first.
+            'title': f'{slug.upper()} {title_cn}'.strip(),
+            'title_cn': title_cn,
             **{c: _text(item.get(c))
-               for c in ('description', 'title', 'title_cn', 'title_zh',
+               for c in ('description', 'title_ja', 'title_zh',
                          'thumbnail', 'preview')},
             **{c: _flag(item.get(c)) for c in DETAIL_FLAGS},
             **{c: json.dumps(_string_list(item.get(c)), ensure_ascii=False)
@@ -532,40 +631,29 @@ def save_details(site: str, items: list[dict]) -> list[str]:
             'duration': _duration_seconds(item.get('duration')),
             'released_at': _text(item.get('released_at')) or None,
             'type': _text(item.get('type')) or None,
+            'details_at': now,
         }
         rows[url] = tuple(row[c] for c in _DETAIL_COLUMNS) + (now, now)
     if not rows:
         return []
-    columns = ', '.join(_DETAIL_COLUMNS)
-    updates = ', '.join(f'{c} = excluded.{c}' for c in _DETAIL_REFRESHED)
     with _connect() as conn:
         urls = list(rows)
-        existing = set()
+        known = set()
         for i in range(0, len(urls), 500):
             chunk = urls[i:i + 500]
-            existing.update(r[0] for r in conn.execute(
-                f'SELECT url FROM video_details WHERE url IN ({",".join("?" * len(chunk))})',
-                chunk))
+            known.update(r[0] for r in conn.execute(
+                f'SELECT url FROM videos WHERE url IN ({",".join("?" * len(chunk))})'
+                ' AND details_at IS NOT NULL', chunk))
         conn.executemany(
-            f'INSERT INTO video_details ({columns}, created_at, updated_at)'
+            f'INSERT INTO videos ({", ".join(_DETAIL_COLUMNS)}, created_at, updated_at)'
             f' VALUES ({", ".join("?" * (len(_DETAIL_COLUMNS) + 2))})'
-            f' ON CONFLICT(url) DO UPDATE SET {updates},'
-            ' updated_at = excluded.updated_at',
+            f' ON CONFLICT(url) DO UPDATE SET {_DETAIL_UPDATES}',
             list(rows.values()))
-        new = [url for url in urls if url not in existing]
-        for url in new:
-            known = conn.execute(
-                'SELECT resolved_url, resolved_expires, headers FROM videos'
-                ' WHERE url = ? AND resolved_url IS NOT NULL', (url,)).fetchone()
-            if known:
-                conn.execute(
-                    'UPDATE video_details SET resolved_url = ?, resolved_expires = ?,'
-                    ' headers = ? WHERE url = ?', (*known, url))
-    return new
+    return [url for url in urls if url not in known]
 
 
-def detail_row_lists(row: dict) -> dict:
-    """actors/actresses/genres of a video_details row as lists."""
+def row_lists(row: dict) -> dict:
+    """actors/actresses/genres of a row as lists."""
     result = {}
     for column in DETAIL_LISTS:
         try:
@@ -573,17 +661,3 @@ def detail_row_lists(row: dict) -> dict:
         except ValueError:
             result[column] = []
     return result
-
-
-def list_details_page(page: int, size: int, site: str | None = None,
-                      deleted: bool = False,
-                      search: str | None = None) -> tuple[list[dict], int]:
-    """list_page for video_details: *search* matches the code or any of
-    the three titles."""
-    return _list_rows('video_details', 'code', ('title', 'title_cn', 'title_zh'),
-                      page, size, site, deleted, search)
-
-
-def remove_details(url: str) -> bool:
-    """Soft-delete a video_details row; False if not stored or already removed."""
-    return _remove_row('video_details', url)

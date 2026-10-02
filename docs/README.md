@@ -12,6 +12,7 @@ core:
 Supporting references:
 
 - [AI subtitles](./ai-subtitles.md)
+- [UAV Resolver API](./resolver-api.md)
 - [Architecture and source layout](./architecture.md)
 - [Migrating to UAV Downloader](./migration-to-uav.md)
 - [Windows download verification](../WINDOWS_SECURITY.md)

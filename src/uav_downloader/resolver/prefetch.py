@@ -26,6 +26,9 @@ A second, background queue (enqueue_background) holds long-running work such
 as the related-video crawl. It only runs while the main queue is empty, is not
 capped by RESOLVER_PREFETCH_QUEUE and survives a block (it just waits out the
 backoff): its owner bounds its size, and nothing would re-queue it.
+
+Once both queues have run empty, on_idle (if set) gets a chance to queue
+more, e.g. retrying the pages a crawl failed to resolve.
 """
 
 import logging
@@ -59,6 +62,8 @@ class Prefetcher:
         have opened the video in the meantime."""
         self._fetch = fetch
         self._needs_fetch = needs_fetch
+        # Called whenever both queues have run empty; it may queue more.
+        self.on_idle: Callable[[], object] | None = None
         self._queue: deque[str] = deque()
         self._queued: set[str] = set()
         self._calls: dict[str, Callable[[], object]] = {}
@@ -174,9 +179,18 @@ class Prefetcher:
     def _gap(self):
         time.sleep(random.uniform(DELAY_MIN, max(DELAY_MIN, DELAY_MAX)))
 
+    def _idle(self) -> bool:
+        with self._cond:
+            return not self._queue and not self._background
+
     def _run(self):
         failures = 0
         while True:
+            if self.on_idle is not None and self._idle():
+                try:
+                    self.on_idle()
+                except Exception:
+                    logger.exception('prefetch idle hook failed')
             url, call = self._next()
             try:
                 if call is None and not self._needs_fetch(url):
