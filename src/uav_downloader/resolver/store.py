@@ -661,3 +661,44 @@ def row_lists(row: dict) -> dict:
         except ValueError:
             result[column] = []
     return result
+
+
+# ── Ad-hoc queries ───────────────────────────────────────────────────────
+
+QUERY_TIMEOUT = 10
+
+
+def tables() -> list[str]:
+    with _connect() as conn:
+        return [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+
+
+def run_query(columns: str, table: str, where: str = '', order: str = '',
+              limit: int = 100, offset: int = 0) -> tuple[list[str], list[dict], int]:
+    """SELECT *columns* FROM *table* [WHERE *where*] [ORDER BY *order*]:
+    (column names, one page of rows, total row count). The fragments are
+    raw SQL, so the connection is read-only (query_only) and runs one
+    statement; *table* must be an existing table. Raises ValueError for an
+    unknown table, sqlite3.Error for bad SQL or a query over
+    QUERY_TIMEOUT seconds."""
+    if table not in tables():
+        raise ValueError(f'unknown table: {table}')
+    where_sql = f' WHERE {where}' if where.strip() else ''
+    order_sql = f' ORDER BY {order}' if order.strip() else ''
+    deadline = time.monotonic() + QUERY_TIMEOUT
+    conn = _connect()
+    try:
+        conn.execute('PRAGMA query_only = ON')
+        # A non-zero return aborts the running statement (sqlite3.OperationalError).
+        conn.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
+        select = f'SELECT {columns or "*"} FROM "{table}"{where_sql}'
+        # Counted as a subquery, so a GROUP BY in *where* counts groups.
+        total = conn.execute(f'SELECT COUNT(*) FROM ({select})').fetchone()[0]
+        cur = conn.execute(f'{select}{order_sql} LIMIT ? OFFSET ?', (limit, offset))
+        names = [d[0] for d in cur.description]
+        rows = [dict(zip(names, row)) for row in cur]
+        return names, rows, total
+    finally:
+        conn.close()

@@ -15,6 +15,7 @@ import html
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -889,28 +890,33 @@ _BACKFILL_BATCH = 500
 
 
 class _Backfill:
-    """Once a crawl's queue has run dry, re-queue the MissAV rows still
-    without a resolved_url (a page fetch that failed, e.g. while blocked, is
-    not retried by the queue itself), round after round until each has had
+    """Once a crawl's queue has run dry, re-queue the rows still without a
+    resolved_url (a page fetch that failed, e.g. while blocked, is not
+    retried by the queue itself), round after round until each has had
     BACKFILL_ATTEMPTS tries. A page that can't be parsed (4xx) is given up
-    on at once. Starting a crawl starts it over."""
+    on at once. Starting a crawl (MissAV) or POST /api/backfill starts it
+    over."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._active = False
+        self._sites: tuple[str, ...] = ('missav',)
         self._attempts: dict[str, int] = {}
 
-    def start(self):
+    def start(self, sites: tuple[str, ...] = ('missav',)):
         with self._lock:
             self._active = True
+            self._sites = sites
             self._attempts.clear()
 
-    def on_idle(self):
+    def on_idle(self) -> int:
+        """Queue the next round; returns how many pages it queued."""
         with self._lock:
             if not self._active:
-                return
+                return 0
+            sites = self._sites
         queued = 0
-        for url in store.unresolved_urls('missav'):
+        for url in (url for site in sites for url in store.unresolved_urls(site)):
             with self._lock:
                 tries = self._attempts.get(url, 0)
             if tries >= BACKFILL_ATTEMPTS:
@@ -928,7 +934,8 @@ class _Backfill:
             with self._lock:
                 self._active = False
             logger.info('backfill done; %d pages still without resolved_url',
-                        store.count_unresolved('missav'))
+                        self._unresolved(sites))
+        return queued
 
     def _fetch(self, url: str):
         if not _needs_detail(url):
@@ -941,11 +948,15 @@ class _Backfill:
                     self._attempts[url] = BACKFILL_ATTEMPTS
             raise
 
+    @staticmethod
+    def _unresolved(sites: tuple[str, ...]) -> int:
+        return sum(store.count_unresolved(site) for site in sites)
+
     def status(self) -> dict:
         with self._lock:
-            active = self._active
-        return {'backfill_active': active,
-                'unresolved': store.count_unresolved('missav')}
+            active, sites = self._active, self._sites
+        return {'backfill_active': active, 'backfill_sites': list(sites),
+                'unresolved': self._unresolved(sites)}
 
 
 _backfill = _Backfill()
@@ -1023,6 +1034,38 @@ def full_crawl_status(x_api_key: str | None = Header(default=None)):
     return _search_crawler.status()
 
 
+class BackfillRequest(BaseModel):
+    # jabletv, missav, or None for both.
+    site: str | None = 'missav'
+
+
+@app.post('/api/backfill')
+def backfill_start(req: BackfillRequest,
+                   x_api_key: str | None = Header(default=None)):
+    """Run the backfill (see _Backfill) now, without a crawl: every live row
+    of *site* still without a resolved_url gets BACKFILL_ATTEMPTS fresh
+    tries, in the background queue."""
+    _check_api_key(x_api_key)
+    if not PREFETCH_ENABLED:
+        raise HTTPException(status_code=409, detail='prefetch is disabled')
+    site = (req.site or '').strip()
+    if site and site not in _BROWSERS:
+        raise HTTPException(status_code=400, detail=f'unknown site: {site}')
+    _backfill.start((site,) if site else tuple(_BROWSERS))
+    # The prefetcher only calls on_idle when it wakes up idle; it may be
+    # asleep waiting for work, so queue the first round here.
+    queued = _backfill.on_idle()
+    logger.info('manual backfill for %s: queued %d', site or 'all sites', queued)
+    return {'ok': True, 'queued': queued, **_backfill.status()}
+
+
+@app.get('/api/backfill')
+def backfill_status(x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    main, background = _prefetcher.pending()
+    return {**_backfill.status(), 'queued': main, 'queued_background': background}
+
+
 def _format_duration(seconds: int | None) -> str:
     """"[h:]mm:ss" like listing cards show, '' if unknown."""
     if seconds is None:
@@ -1096,6 +1139,44 @@ def remove_video(url: str, x_api_key: str | None = Header(default=None)):
     if not store.remove(url):
         raise HTTPException(status_code=404, detail='video not found')
     return {'ok': True}
+
+
+class QueryRequest(BaseModel):
+    # Raw SQL fragments: SELECT <query> FROM <table> WHERE <filter>
+    # ORDER BY <order>.
+    query: str = '*'
+    table: str = 'videos'
+    filter: str = ''
+    order: str = ''
+    limit: int = 100
+    offset: int = 0
+
+
+@app.post('/api/query')
+def query_table(req: QueryRequest, x_api_key: str | None = Header(default=None)):
+    """Read-only ad-hoc SELECT over the DB, for looking at the stored data
+    (see store.run_query)."""
+    _check_api_key(x_api_key)
+    if not 1 <= req.limit <= 1000:
+        raise HTTPException(status_code=400, detail='limit must be 1-1000')
+    if req.offset < 0:
+        raise HTTPException(status_code=400, detail='offset must be >= 0')
+    try:
+        columns, rows, total = store.run_query(
+            req.query.strip(), req.table.strip(), req.filter, req.order,
+            req.limit, req.offset)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=400, detail=f'query failed: {exc}') from exc
+    return {'columns': columns, 'rows': rows, 'total': total,
+            'limit': req.limit, 'offset': req.offset}
+
+
+@app.get('/api/query/tables')
+def query_tables(x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    return {'tables': store.tables()}
 
 
 @app.get('/api/browse/thumb')

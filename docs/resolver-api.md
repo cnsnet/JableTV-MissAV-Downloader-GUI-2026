@@ -7,7 +7,7 @@ Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolv
 
 ## 概览
 
-`/api` 下共 **15 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health`。
+`/api` 下共 **19 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health`。
 
 | # | 方法 | 路径 | 分组 |
 |---|---|---|---|
@@ -24,8 +24,12 @@ Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolv
 | 11 | GET | `/api/crawl` | 爬取 |
 | 12 | POST | `/api/crawl/full` | 爬取 |
 | 13 | GET | `/api/crawl/full` | 爬取 |
-| 14 | GET | `/api/videos` | 已存视频 |
-| 15 | DELETE | `/api/videos` | 已存视频 |
+| 14 | POST | `/api/backfill` | 爬取 |
+| 15 | GET | `/api/backfill` | 爬取 |
+| 16 | GET | `/api/videos` | 已存视频 |
+| 17 | DELETE | `/api/videos` | 已存视频 |
+| 18 | POST | `/api/query` | 数据查询 |
+| 19 | GET | `/api/query/tables` | 数据查询 |
 
 **认证**：除 `/health` 和 `/api/browse/thumb` 外，所有接口都要带请求头
 `X-API-Key: <RESOLVER_API_KEY>`，否则返回 401。`/api/browse/thumb` 还可以用
@@ -106,7 +110,7 @@ MissAV 的 Recombee 请求失败时返回空列表。
 
 队列全部跑完后会自动 **补抓**：把 MissAV 中 `resolved_url` 为空、未删除的行重新排队，
 一轮一轮直到每个页面试满 `RESOLVER_BACKFILL_ATTEMPTS`（默认 3）次；返回 4xx 的页面立即放弃。
-每次 POST 新的爬取都会让补抓重新开始计数。
+每次 POST 新的爬取都会让补抓重新开始计数；也可以用 `POST /api/backfill` 不爬取、直接手动补抓。
 
 ### POST `/api/crawl`
 
@@ -139,7 +143,22 @@ MissAV 的 Recombee 请求失败时返回空列表。
 | `seen` | 本进程内已走过的页面数 |
 | `queued` / `queued_background` | 预取主队列 / 后台队列长度 |
 | `backfill_active` | 是否正在补抓 |
-| `unresolved` | MissAV 中还没有 `resolved_url` 的行数 |
+| `backfill_sites` | 补抓覆盖的站点 |
+| `unresolved` | 这些站点中还没有 `resolved_url`、未删除的行数 |
+
+### POST `/api/backfill`
+
+手动补抓：把 `site` 中 `resolved_url` 为空、未删除的行重新排进后台队列，每个页面重新给
+`RESOLVER_BACKFILL_ATTEMPTS` 次机会（规则同上面的自动补抓，共享预取的节奏和退避）。
+
+请求体：`{"site": "missav"}`（默认 `missav`；`jabletv` 只补 JableTV；`null` 两个站点都补）
+
+返回：`{"ok": true, "queued": <本轮排队数>, "backfill_active", "backfill_sites", "unresolved"}`。
+`queued` 为 0 表示没有可补的行。
+
+### GET `/api/backfill`
+
+补抓进度：`{"backfill_active", "backfill_sites", "unresolved", "queued", "queued_background"}`。
 
 ## 已存视频
 
@@ -175,6 +194,33 @@ Recombee 相关字段要等爬取经过该视频后才有值。播放仍应走 `
 
 软删除：行保留，但之后除 `/api/videos?deleted=true` 外任何接口都不再返回它。
 返回 `{"ok": true}`，不存在或已删除返回 404。
+
+## 数据查询
+
+### POST `/api/query`
+
+只读的临时查询，相当于执行
+`SELECT <query> FROM <table> WHERE <filter> ORDER BY <order> LIMIT <limit> OFFSET <offset>`。
+
+请求体：
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `query` | `*` | 要查的列 / 表达式，如 `id, slug, resolved_url`、`site, count(*) n` |
+| `table` | `videos` | 表名，必须是库里已有的表（见 `/api/query/tables`） |
+| `filter` | 空 | WHERE 条件，如 `resolved_url IS NULL AND site = 'missav'`；可在末尾接 `GROUP BY` |
+| `order` | 空 | ORDER BY，如 `id DESC` |
+| `limit` / `offset` | `100` / `0` | 分页，`limit` 为 1–1000 |
+
+`query` / `filter` / `order` 是原样拼进去的 SQL 片段。连接是只读的（`PRAGMA query_only`）
+且只能执行一条语句，写操作或 `;` 拼多条语句会报错；单次查询超过 10 秒会被中止。
+
+返回：`{"columns": [...], "rows": [{列: 值}, ...], "total", "limit", "offset"}`，
+`total` 是不分页时的总行数（有 `GROUP BY` 时为组数）。表名不存在、SQL 出错返回 400。
+
+### GET `/api/query/tables`
+
+库里有哪些表：`{"tables": ["videos"]}`。
 
 ## 环境变量
 
