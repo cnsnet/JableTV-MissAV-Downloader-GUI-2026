@@ -32,9 +32,23 @@ def test_validate_accepts_video_pages():
     assert SiteMissAV.validate_url('https://missav.ai/dm464/081012-097')
 
 
+def test_validate_accepts_any_code_shape():
+    for url in ('https://missav.ai/cn/sachiko-takeda',
+                'https://missav.ai/cn/n0569',
+                'https://missav.ai/cn/h4610-ki230924',
+                'https://missav.ai/cn/mkd-s122',
+                'https://missav.ai/cn/mkd-s122/?ref=x'):
+        assert SiteMissAV.validate_url(url), url
+
+
 def test_validate_rejects_category_and_foreign_pages():
     assert not SiteMissAV.validate_url('https://missav.ai/dm278/chinese-subtitle')
     assert not SiteMissAV.validate_url('https://missav.ai/dm539/new')
+    assert not SiteMissAV.validate_url('https://missav.ai/dm42/en/tokyohot')
+    assert not SiteMissAV.validate_url('https://missav.ai/cn/new?page=2')
+    assert not SiteMissAV.validate_url('https://missav.ai/cn/genres/abc')
+    assert not SiteMissAV.validate_url('https://missav.ai/cn/search/sone')
+    assert not SiteMissAV.validate_url('https://missav.ai/cn/')
     assert not SiteMissAV.validate_url('https://jable.tv/videos/x/')
 
 

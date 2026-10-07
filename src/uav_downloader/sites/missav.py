@@ -126,15 +126,30 @@ class SiteMissAV(M3U8Crawler):
     segment_retry_base_delay = 1.5
     segment_retry_max_delay = 8.0
     _segment_request_gate = threading.BoundedSemaphore(8)
-    # Matches video pages ONLY (no dm\d+ routing prefix — those are category pages):
+    # Matches video pages: one path segment after an optional /dm<N>/ routing
+    # prefix and language segment.  Codes come in any shape (sone-543,
+    # 092014_887, n0569, mkd-s122, sachiko-takeda), so the segment itself is
+    # not checked; only the site's own listing pages are ruled out:
     #   https://missav.ai/cn/sone-543-chinese-subtitle
-    #   https://missav.ai/sone-543
     #   https://missav.ai/dm1151/092014_887
-    #   https://missav.ai/dm464/081012-097
+    #   https://missav.ai/cn/sachiko-takeda
     # Does NOT match:
     #   https://missav.ai/dm278/chinese-subtitle  (category listing)
-    website_pattern = r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/(?:dm\d+/)?(?:cn|en|ja|ko|ms|th)/([a-zA-Z0-9][a-zA-Z0-9\-_]+)|https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/([a-zA-Z0-9][a-zA-Z0-9\-_]*[-_]\d[a-zA-Z0-9\-_]*)'
-    website_dirname_pattern = r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/(?:dm\d+/)?(?:(?:cn|en|ja|ko|ms|th)/)?([a-zA-Z0-9][a-zA-Z0-9\-_]*[-_]\d[a-zA-Z0-9\-_]*)'
+    #   https://missav.ai/cn/genres/xxx           (more than one segment)
+    _LISTING_SLUGS = (
+        'new|release|today-hot|weekly-hot|monthly-hot|chinese-subtitle|'
+        'english-subtitle|uncensored-leak|siro|luxu|gana|maan|scute|ara|fc2|'
+        'heyzo|tokyohot|1pondo|caribbeancom|caribbeancompr|10musume|'
+        'pacopacomama|gachinco|xxxav|marriedslash|naughty4610|naughty0930|'
+        'madou|twav|furuke|klive|clive|vr|genres|makers|actresses|search|'
+        'saved|playlists|history|login|register|contact|dmca|terms|privacy|'
+        'cn|en|ja|ko|ms|th|zh|de|fr|vi|id|fil|pt|tw')
+    website_dirname_pattern = (
+        r'https://(?:www\.)?(?:missav\.(?:ai|ws|live)|missav123\.com)/'
+        r'(?:dm\d+/)?(?:(?:cn|en|ja|ko|ms|th)/)?'
+        r'(?!(?:' + _LISTING_SLUGS + r')/?(?:[?#]|$))'
+        r'([a-zA-Z0-9][a-zA-Z0-9\-_]*)/?(?:[?#].*)?$')
+    website_pattern = website_dirname_pattern
 
     _shared_scraper = None
     _scraper_lock = threading.Lock()
