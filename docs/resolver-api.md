@@ -65,7 +65,8 @@ query 参数 `api_key=` 传 key（图片加载库加不了请求头）。
 
 返回：`ok`、`title`、`id`（页面 slug）、`description`、`thumbnail`、
 `resolved_url`、`headers`（播放时 CDN 需要的 Referer / Origin）、
-`has_chinese_subtitle`、`is_uncensored_leak`。
+`has_chinese_subtitle`、`is_uncensored_leak`。MissAV 的 `thumbnail` 返回大图
+`cover-n.jpg`（库里存的是小图 `cover-t.jpg`，列表接口仍返回小图）。
 
 ## 浏览
 

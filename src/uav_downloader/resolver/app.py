@@ -267,7 +267,16 @@ def detail(url: str, x_api_key: str | None = Header(default=None)):
 
     _check_not_removed(url)
     _prefetcher.user_activity()
-    return {'ok': True, **_video_info(url)}
+    info = _video_info(url)
+    return {'ok': True, **info, 'thumbnail': _large_cover(info['thumbnail'])}
+
+
+_SMALL_COVER_RE = re.compile(r'(https://fourhoi\.com/.+)/cover-t\.jpg$')
+
+
+def _large_cover(thumbnail: str) -> str:
+    """MissAV's cover-n.jpg (large) for its stored cover-t.jpg (small)."""
+    return _SMALL_COVER_RE.sub(r'\1/cover-n.jpg', thumbnail or '')
 
 
 # ── Browse: category/search listings for the Android UI ───────────────
