@@ -2,18 +2,19 @@ package top.cnsc.uavresolver
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
@@ -44,6 +45,9 @@ fun VideoDetailDialog(
     onDismiss: () -> Unit,
     // Called with the video's url once it was deleted on the server.
     onRemoved: (String) -> Unit,
+    // Called with a video's url and new state once its favourite was set on
+    // the server (this video or one of its recommendations).
+    onFavouriteChanged: (String, Boolean) -> Unit,
 ) {
     var detail by remember { mutableStateOf<VideoDetail?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -55,6 +59,8 @@ fun VideoDetailDialog(
     var submitting by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf(false) }
+    var favourite by remember { mutableStateOf(video.favourite) }
+    var favouriting by remember { mutableStateOf(false) }
     // Long-pressing a recommendation opens another detail page stacked on top.
     var detailTarget by remember { mutableStateOf<BrowseVideo?>(null) }
     val scope = rememberCoroutineScope()
@@ -140,6 +146,28 @@ fun VideoDetailDialog(
         }
     }
 
+    // Keeps this page's own state and its recommendations in step with a
+    // favourite set here or on a page stacked on top.
+    fun applyFavourite(url: String, value: Boolean) {
+        if (url == video.url) favourite = value
+        related = related.map { if (it.url == url) it.copy(favourite = value) else it }
+        onFavouriteChanged(url, value)
+    }
+
+    fun toggleFavourite(url: String, current: Boolean) {
+        scope.launch {
+            if (url == video.url) favouriting = true
+            val failure = setFavourite(api, baseUrl, apiKey, url, !current)
+            if (url == video.url) favouriting = false
+            if (failure == null) {
+                applyFavourite(url, !current)
+                onSubmitResult(if (current) "已取消收藏" else "已收藏", true)
+            } else {
+                onSubmitResult(failure, false)
+            }
+        }
+    }
+
     fun removeVideo() {
         scope.launch {
             removing = true
@@ -209,23 +237,49 @@ fun VideoDetailDialog(
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize(),
                                 )
+                                // Same look as the heart on listing cards, a size up.
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(8.dp)
+                                        .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(50))
+                                        .clickable(enabled = !favouriting) {
+                                            toggleFavourite(video.url, favourite)
+                                        }
+                                        .padding(8.dp),
+                                ) {
+                                    if (favouriting) {
+                                        CircularProgressIndicator(
+                                            color = Color.White,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    } else {
+                                        Icon(
+                                            if (favourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = if (favourite) "取消收藏" else "收藏",
+                                            tint = if (favourite) favouriteColor else Color.White,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    }
+                                }
                             }
 
                             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        code,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                    VersionBadges(
-                                        hasChineseSubtitle = detail?.hasChineseSubtitle
-                                            ?: video.hasChineseSubtitle,
-                                        isUncensoredLeak = detail?.isUncensoredLeak
-                                            ?: video.isUncensoredLeak,
-                                        modifier = Modifier.padding(start = 8.dp),
-                                    )
-                                }
+                                Text(
+                                    code,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                // On a line of their own: next to a long code they'd be
+                                // squeezed into one character per line.
+                                VersionBadges(
+                                    hasChineseSubtitle = detail?.hasChineseSubtitle
+                                        ?: video.hasChineseSubtitle,
+                                    isUncensoredLeak = detail?.isUncensoredLeak
+                                        ?: video.isUncensoredLeak,
+                                    modifier = Modifier.padding(top = 6.dp),
+                                )
                                 // /api/detail may swap an untranslated Japanese title for a
                                 // Chinese one, so prefer it once loaded.
                                 Text(
@@ -264,11 +318,7 @@ fun VideoDetailDialog(
                                     }
                                 }
                                 Spacer(Modifier.height(16.dp))
-                                Row(
-                                    // Four buttons can outgrow a narrow screen.
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     DetailButton(
                                         text = "播放",
                                         icon = Icons.Default.PlayArrow,
@@ -276,9 +326,10 @@ fun VideoDetailDialog(
                                         onClick = { detail?.let { onPlayVideo(it) } },
                                     )
                                     DetailButton(
-                                        text = if (downloading) "提交中..." else "下载",
+                                        text = "下载",
                                         icon = Icons.Default.CloudDownload,
                                         enabled = resolved && !downloading,
+                                        busy = downloading,
                                         onClick = { submitRemoteDownload() },
                                     )
                                     DetailButton(
@@ -293,9 +344,10 @@ fun VideoDetailDialog(
                                         },
                                     )
                                     DetailButton(
-                                        text = if (removing) "删除中..." else "删除",
+                                        text = "删除",
                                         icon = Icons.Default.Delete,
                                         enabled = !removing,
+                                        busy = removing,
                                         onClick = { confirmRemove = true },
                                     )
                                 }
@@ -333,6 +385,7 @@ fun VideoDetailDialog(
                                 }
                             },
                             onLongPress = { detailTarget = item },
+                            onToggleFavourite = { toggleFavourite(item.url, item.favourite) },
                         )
                     }
                 }
@@ -377,25 +430,37 @@ fun VideoDetailDialog(
                 selected = selected - url
                 onRemoved(url)
             },
+            onFavouriteChanged = { url, value -> applyFavourite(url, value) },
         )
     }
 }
 
+// Icon only; *text* is what accessibility services read out.
 @Composable
 private fun DetailButton(
     text: String,
     icon: ImageVector,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    // A spinner in place of the icon while its action runs.
+    busy: Boolean = false,
 ) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
         shape = RoundedCornerShape(4.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        // Square: the fixed size also overrides the button's 58dp minimum width.
+        contentPadding = PaddingValues(0.dp),
+        modifier = Modifier.size(48.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(4.dp))
-        Text(text)
+        if (busy) {
+            CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(
+                icon,
+                contentDescription = text,
+                modifier = Modifier.size(26.dp),
+            )
+        }
     }
 }

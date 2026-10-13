@@ -38,6 +38,7 @@ data class BrowseVideo(
     // MissAV's 中文字幕/无码影片 flags; null when not known (e.g. JableTV).
     val hasChineseSubtitle: Boolean? = null,
     val isUncensoredLeak: Boolean? = null,
+    val favourite: Boolean = false,
 )
 
 data class StoredVideoPage(val videos: List<BrowseVideo>, val pages: Int)
@@ -203,12 +204,15 @@ class ResolverApi {
 
     // Videos the resolver has stored in its DB, newest first; a non-empty
     // search fuzzy-matches the code (ipx -> ipx-789, ipx-789-...) or title.
+    // With favourite, only the favourites, most recently added first.
     suspend fun storedVideos(
         baseUrl: String, apiKey: String, page: Int, search: String = "",
+        favourite: Boolean = false,
     ): StoredVideoPage = withContext(Dispatchers.IO) {
         val builder = "${baseUrl.trimEnd('/')}/api/videos".toHttpUrl().newBuilder()
             .addQueryParameter("page", page.toString())
         if (search.isNotEmpty()) builder.addQueryParameter("search", search)
+        if (favourite) builder.addQueryParameter("favourite", "true")
         val url = builder.build()
         val text = executeGet(url, apiKey)
         StoredVideoPage(parseVideos(text), JSONObject(text).optInt("pages", 0))
@@ -221,6 +225,26 @@ class ResolverApi {
                 .addQueryParameter("url", videoUrl)
                 .build()
             val request = Request.Builder().url(url).addHeader("X-API-Key", apiKey).delete().build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val text = resp.body?.string().orEmpty()
+                    throw ResolverException("HTTP ${resp.code}: ${extractDetail(text, resp.code)}")
+                }
+            }
+        }
+
+    // Adds a stored video to the favourites, or takes it out.
+    suspend fun setFavourite(baseUrl: String, apiKey: String, videoUrl: String, favourite: Boolean) =
+        withContext(Dispatchers.IO) {
+            val url = "${baseUrl.trimEnd('/')}/api/favourites".toHttpUrl().newBuilder()
+                .addQueryParameter("url", videoUrl)
+                .build()
+            val builder = Request.Builder().url(url).addHeader("X-API-Key", apiKey)
+            val request = if (favourite) {
+                builder.put(ByteArray(0).toRequestBody()).build()
+            } else {
+                builder.delete().build()
+            }
             client.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val text = resp.body?.string().orEmpty()
@@ -278,6 +302,7 @@ class ResolverApi {
                 id = o.optString("id"),
                 hasChineseSubtitle = o.optFlag("has_chinese_subtitle"),
                 isUncensoredLeak = o.optFlag("is_uncensored_leak"),
+                favourite = o.optBoolean("favourite", false),
             )
         }
     }

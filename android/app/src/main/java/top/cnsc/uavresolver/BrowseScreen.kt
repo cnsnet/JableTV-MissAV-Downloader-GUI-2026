@@ -18,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -39,6 +41,9 @@ private enum class PickerMode { NAV, MENU, TAGS }
 
 // Pseudo-site for the resolver's own stored-video list (/api/videos).
 private const val STORED_SITE = "stored"
+
+// Pseudo-site for the favourites (/api/videos?favourite=true).
+private const val FAVOURITE_SITE = "favourite"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,14 +100,15 @@ fun BrowseScreen(
     }
 
     suspend fun loadVideos(cat: BrowseCategory?, query: String, pageNum: Int) {
-        if (site != STORED_SITE && query.isEmpty() && cat == null) return
+        val isStored = site == STORED_SITE || site == FAVOURITE_SITE
+        if (!isStored && query.isEmpty() && cat == null) return
         loading = true
         error = null
         selected = emptySet()
         lastPage = null
         try {
-            videos = if (site == STORED_SITE) {
-                val stored = api.storedVideos(baseUrl, apiKey, pageNum, query)
+            videos = if (isStored) {
+                val stored = api.storedVideos(baseUrl, apiKey, pageNum, query, site == FAVOURITE_SITE)
                 lastPage = stored.pages
                 stored.videos
             } else if (query.isNotEmpty()) {
@@ -146,6 +152,37 @@ fun BrowseScreen(
         activeSearch = searchQuery.trim()
         page = 1
         reloadKey++
+    }
+
+    // Like openStored, for the favourites.
+    fun openFavourites() {
+        site = FAVOURITE_SITE
+        selectedCategory = null
+        activeSearch = searchQuery.trim()
+        page = 1
+        reloadKey++
+    }
+
+    // A video taken out of the favourites leaves the favourites list.
+    fun applyFavourite(url: String, favourite: Boolean) {
+        videos = if (site == FAVOURITE_SITE && !favourite) {
+            videos.filter { it.url != url }
+        } else {
+            videos.map { if (it.url == url) it.copy(favourite = favourite) else it }
+        }
+        if (site == FAVOURITE_SITE && !favourite) selected = selected - url
+    }
+
+    fun toggleFavourite(video: BrowseVideo) {
+        scope.launch {
+            val failure = setFavourite(api, baseUrl, apiKey, video.url, !video.favourite)
+            if (failure == null) {
+                applyFavourite(video.url, !video.favourite)
+                onSubmitResult(if (video.favourite) "已取消收藏" else "已收藏", true)
+            } else {
+                onSubmitResult(failure, false)
+            }
+        }
     }
 
     fun searchSite(targetSite: String) {
@@ -313,6 +350,10 @@ fun BrowseScreen(
                         onClick = { menuExpanded = false; pickerMode = PickerMode.TAGS },
                     )
                     DropdownMenuItem(
+                        text = { Text("我的收藏") },
+                        onClick = { menuExpanded = false; openFavourites() },
+                    )
+                    DropdownMenuItem(
                         text = { Text("解析下载") },
                         onClick = { menuExpanded = false; onOpenHistory() },
                     )
@@ -356,6 +397,7 @@ fun BrowseScreen(
                         }
                     },
                     onLongPress = { detailTarget = video },
+                    onToggleFavourite = { toggleFavourite(video) },
                 )
             }
         }
@@ -411,6 +453,7 @@ fun BrowseScreen(
                 videos = videos.filter { it.url != url }
                 selected = selected - url
             },
+            onFavouriteChanged = { url, favourite -> applyFavourite(url, favourite) },
         )
     }
 
@@ -532,6 +575,18 @@ suspend fun removeUrls(
     return removed to msg
 }
 
+/** Adds the url to the favourites or takes it out; returns the error message, null on success. */
+suspend fun setFavourite(
+    api: ResolverApi, baseUrl: String, apiKey: String, url: String, favourite: Boolean,
+): String? = try {
+    api.setFavourite(baseUrl, apiKey, url, favourite)
+    null
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    e.message ?: if (favourite) "收藏失败" else "取消收藏失败"
+}
+
 /** Submits each url for remote download; returns the summary message and whether all succeeded. */
 suspend fun submitUrls(
     api: ResolverApi, baseUrl: String, apiKey: String, history: HistoryStore, urls: List<String>,
@@ -577,6 +632,8 @@ private fun SearchBarButton(text: String, onClick: () -> Unit) {
 private val chineseSubtitleColor = Color(0xFF991B1B)
 private val uncensoredLeakColor = Color(0xFF1E40AF)
 
+val favouriteColor = Color(0xFFEF4444)
+
 @Composable
 fun VersionBadges(
     hasChineseSubtitle: Boolean?,
@@ -610,6 +667,7 @@ fun VideoCard(
     isSelected: Boolean,
     onToggle: () -> Unit,
     onLongPress: () -> Unit,
+    onToggleFavourite: () -> Unit,
 ) {
     Card(
         shape = RectangleShape,
@@ -668,6 +726,20 @@ fun VideoCard(
                             modifier = Modifier.padding(4.dp).size(14.dp),
                         )
                     }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(50))
+                        .clickable(onClick = onToggleFavourite),
+                ) {
+                    Icon(
+                        if (video.favourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = if (video.favourite) "取消收藏" else "收藏",
+                        tint = if (video.favourite) favouriteColor else Color.White,
+                        modifier = Modifier.padding(4.dp).size(16.dp),
+                    )
                 }
             }
             Text(
