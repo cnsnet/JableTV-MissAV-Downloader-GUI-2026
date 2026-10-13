@@ -194,13 +194,42 @@ def test_search_and_remove():
 def test_list_videos_endpoint():
     store.save_details('missav', resolver_app._parse_recombee_details(RECOMBEE))
     result = resolver_app.list_videos(1, 10, None, False, 'ipx771',
-                                      resolver_app.RESOLVER_API_KEY)
+                                      x_api_key=resolver_app.RESOLVER_API_KEY)
     [video] = result['videos']
     assert (video['id'], video['code']) == ('ipx-771-uncensored-leak', 'IPX-771')
     assert isinstance(video['row_id'], int)
     assert (video['duration'], video['duration_seconds']) == ('2:01:00', 7260)
     assert video['actresses'] == ['女A', '女B']
     assert (video['has_detail'], video['resolved_valid']) == (False, False)
+    assert (video['favourite'], video['favourite_at']) == (False, None)
+
+
+def test_favourites():
+    store.save_details('missav', resolver_app._parse_recombee_details(RECOMBEE))
+    key = resolver_app.RESOLVER_API_KEY
+    url = 'https://missav.ai/cn/sone-001'
+    # Mirror / /dm<N>/ links name the same row.
+    assert resolver_app.add_favourite('https://missav.ws/dm5/cn/sone-001',
+                                      x_api_key=key)['favourite']
+    first = store.get(url)['favourite']
+    assert store.set_favourite(url, True)
+    assert store.get(url)['favourite'] == first
+    result = resolver_app.list_videos(1, 10, favourite=True, x_api_key=key)
+    assert [v['id'] for v in result['videos']] == ['sone-001']
+    assert result['videos'][0]['favourite']
+
+    listed = resolver_app._annotate_listing(
+        'missav', [{'url': url, 'title': 'SONE-001 x'}], prefetch=False)
+    assert listed[0]['favourite']
+
+    resolver_app.remove_favourite(url, x_api_key=key)
+    assert store.list_page(1, 10, favourite=True)[1] == 0
+    with pytest.raises(resolver_app.HTTPException) as exc:
+        resolver_app.add_favourite('https://missav.ai/cn/nope-001', x_api_key=key)
+    assert exc.value.status_code == 404
+    # A removed video can't be favourited.
+    store.remove(url)
+    assert not store.set_favourite(url, True)
 
 
 def test_video_code_strips_variant_suffixes():
@@ -283,7 +312,15 @@ def test_backfill_retries_unresolved_pages(monkeypatch):
     assert rounds[0] == sorted(f'backfill:{u}' for u in (ok, broken, failing))
     # 422 is given up on at once; 502 is retried up to BACKFILL_ATTEMPTS.
     assert rounds[1:] == [[f'backfill:{failing}']] * (resolver_app.BACKFILL_ATTEMPTS - 1)
-    assert backfill.status() == {'backfill_active': False, 'unresolved': 2}
+    assert backfill.status() == {'backfill_active': False,
+                                 'backfill_sites': ['missav'], 'unresolved': 2}
+
+    # Only the sites it was started for: no Jable rows, nothing to queue.
+    backfill.start(('jabletv',))
+    assert backfill.on_idle() == 0
+    assert calls == {}
+    assert backfill.status() == {'backfill_active': False,
+                                 'backfill_sites': ['jabletv'], 'unresolved': 0}
 
 
 def test_crawl_from_keyword_search(monkeypatch):

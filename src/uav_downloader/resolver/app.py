@@ -107,6 +107,12 @@ def _version_flags(row: dict | None) -> dict:
             for flag in store.VERSION_FLAGS}
 
 
+def _row_state(row: dict | None) -> dict:
+    """What clients show of a stored row besides its text: the version flags
+    and whether it is a favourite."""
+    return {**_version_flags(row), 'favourite': store.is_favourite(row)}
+
+
 def _video_info(url: str) -> dict:
     """Title/id/description/thumbnail/resolved_url/headers for a video page.
 
@@ -126,7 +132,7 @@ def _video_info(url: str) -> dict:
             'thumbnail': row['thumbnail'],
             'resolved_url': row['resolved_url'],
             'headers': store.row_headers(row),
-            **_version_flags(row),
+            **_row_state(row),
         }
 
     try:
@@ -179,7 +185,7 @@ def _video_info(url: str) -> dict:
     except Exception:
         logger.exception('store write failed for %s', url)
         row = {'has_chinese_subtitle': cn_sub, 'is_uncensored_leak': uncensored}
-    return {**info, **_version_flags(row)}
+    return {**info, **_row_state(row)}
 
 
 def _check_not_removed(url: str):
@@ -494,9 +500,9 @@ def _annotate_listing(site: str, videos: list[dict],
             video['title'] = row['title']
             video['description'] = row['description']
         if row:
-            video.update(_version_flags(row))
+            video.update(_row_state(row))
         else:
-            video.update(_version_flags(video))
+            video.update(_version_flags(video), favourite=False)
     if prefetch:
         _prefetcher.enqueue([
             v['url'] for v in videos
@@ -560,7 +566,7 @@ def _search_cached_code(site: str, query: str, page: int) -> list[dict]:
         'duration': _format_duration(row['duration']),
         'id': row['slug'],
         'description': row['description'],
-        **_version_flags(row),
+        **_row_state(row),
     } for row in rows]
     if rows and page <= 1:
         _prefetcher.enqueue([row['url'] for row in rows if not store.has_detail(row)])
@@ -1093,17 +1099,19 @@ def _detail_flags(row: dict) -> dict:
 def list_videos(
         page: int = Query(1, ge=1), size: int = Query(12, ge=1, le=100),
         site: str | None = None, deleted: bool = False,
-        search: str | None = None,
+        search: str | None = None, favourite: bool = False,
         x_api_key: str | None = Header(default=None)):
     """Videos stored in the DB, newest first; with deleted=true, the ones
     removed via DELETE /api/videos instead (most recently removed first).
+    favourite=true keeps only the favourites (most recently added first).
     search= fuzzy-matches the code (ipx -> ipx-789, ipx-789-uncensored-leak
     ...) or any title. id is the page slug, row_id the table's. The
     Recombee fields stay empty until a crawl has seen the video. resolved_url
     is as last scraped and may have expired (resolved_valid), so playback
     still goes through /api/detail."""
     _check_api_key(x_api_key)
-    rows, total = store.list_page(page, size, site or None, deleted, search)
+    rows, total = store.list_page(page, size, site or None, deleted, search,
+                                  favourite)
     videos = [{
         'url': row['url'],
         'site': row['site'],
@@ -1129,6 +1137,8 @@ def list_videos(
         'resolved_valid': store.has_valid_resolved_url(row),
         'headers': store.row_headers(row),
         'details_at': row['details_at'],
+        'favourite': store.is_favourite(row),
+        'favourite_at': row['favourite'],
         'created_at': row['created_at'],
         'updated_at': row['updated_at'],
         'deleted_at': row['deleted_at'],
@@ -1148,6 +1158,29 @@ def remove_video(url: str, x_api_key: str | None = Header(default=None)):
     if not store.remove(url):
         raise HTTPException(status_code=404, detail='video not found')
     return {'ok': True}
+
+
+def _set_favourite(url: str, favourite: bool) -> dict:
+    url = (url or '').strip()
+    if not url:
+        raise HTTPException(status_code=400, detail='url is required')
+    if not store.set_favourite(url, favourite):
+        raise HTTPException(status_code=404, detail='video not found')
+    return {'ok': True, 'favourite': favourite}
+
+
+@app.put('/api/favourites')
+def add_favourite(url: str, x_api_key: str | None = Header(default=None)):
+    """Add a stored video to the favourites (listed by
+    /api/videos?favourite=true); adding one twice keeps its first time."""
+    _check_api_key(x_api_key)
+    return _set_favourite(url, True)
+
+
+@app.delete('/api/favourites')
+def remove_favourite(url: str, x_api_key: str | None = Header(default=None)):
+    _check_api_key(x_api_key)
+    return _set_favourite(url, False)
 
 
 class QueryRequest(BaseModel):

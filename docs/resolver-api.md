@@ -7,7 +7,7 @@ Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolv
 
 ## 概览
 
-`/api` 下共 **19 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health`。
+`/api` 下共 **21 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health`。
 
 | # | 方法 | 路径 | 分组 |
 |---|---|---|---|
@@ -28,8 +28,10 @@ Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolv
 | 15 | GET | `/api/backfill` | 爬取 |
 | 16 | GET | `/api/videos` | 已存视频 |
 | 17 | DELETE | `/api/videos` | 已存视频 |
-| 18 | POST | `/api/query` | 数据查询 |
-| 19 | GET | `/api/query/tables` | 数据查询 |
+| 18 | PUT | `/api/favourites` | 收藏 |
+| 19 | DELETE | `/api/favourites` | 收藏 |
+| 20 | POST | `/api/query` | 数据查询 |
+| 21 | GET | `/api/query/tables` | 数据查询 |
 
 **认证**：除 `/health` 和 `/api/browse/thumb` 外，所有接口都要带请求头
 `X-API-Key: <RESOLVER_API_KEY>`，否则返回 401。`/api/browse/thumb` 还可以用
@@ -65,7 +67,7 @@ query 参数 `api_key=` 传 key（图片加载库加不了请求头）。
 
 返回：`ok`、`title`、`id`（页面 slug）、`description`、`thumbnail`、
 `resolved_url`、`headers`（播放时 CDN 需要的 Referer / Origin）、
-`has_chinese_subtitle`、`is_uncensored_leak`。MissAV 的 `thumbnail` 返回大图
+`has_chinese_subtitle`、`is_uncensored_leak`、`favourite`（是否已收藏）。MissAV 的 `thumbnail` 返回大图
 `cover-n.jpg`（库里存的是小图 `cover-t.jpg`，列表接口仍返回小图）。
 
 ## 浏览
@@ -73,7 +75,7 @@ query 参数 `api_key=` 传 key（图片加载库加不了请求头）。
 列表类接口（`videos` / `search` / `related`）返回 `{"videos": [...], "page": n}`
 （`related` 没有 `page`）。每个视频包含：`url`、`title`、`thumbnail`、
 `duration`（显示用字符串，如 `2:01:00`）、`id`（slug）、`description`、
-`has_chinese_subtitle`、`is_uncensored_leak`。列表里出现的视频会存进库里，
+`has_chinese_subtitle`、`is_uncensored_leak`、`favourite`（是否已收藏）。列表里出现的视频会存进库里，
 并在后台排队预取详情；已软删除的视频不会出现。
 
 ### GET `/api/browse/sites`
@@ -163,9 +165,10 @@ MissAV 的 Recombee 请求失败时返回空列表。
 
 ## 已存视频
 
-### GET `/api/videos?page=1&size=12&site=&deleted=false&search=`
+### GET `/api/videos?page=1&size=12&site=&deleted=false&search=&favourite=false`
 
-库里存的视频，按入库时间倒序；`deleted=true` 时改为列出已软删除的（按删除时间倒序）。
+库里存的视频，按入库时间倒序；`deleted=true` 时改为列出已软删除的（按删除时间倒序）；
+`favourite=true` 时只列出收藏的（按收藏时间倒序）。
 `size` 为 1–100。`search` 模糊匹配番号（`ipx` → `ipx-789`、`ipx-789-uncensored-leak`…）
 或任意标题，完全匹配 / 前缀匹配的排在前面。
 
@@ -187,6 +190,7 @@ MissAV 的 Recombee 请求失败时返回空列表。
 | `has_detail` | 页面是否抓过 |
 | `resolved_url` / `resolved_expires` / `resolved_valid` / `headers` | 上次抓到的播放地址、过期时间、是否仍可用、所需请求头 |
 | `details_at` | 上次写入 Recombee 属性的时间，`null` 为从未 |
+| `favourite` / `favourite_at` | 是否已收藏 / 收藏时间，未收藏为 `null` |
 | `created_at` / `updated_at` / `deleted_at` | 时间戳（秒） |
 
 Recombee 相关字段要等爬取经过该视频后才有值。播放仍应走 `/api/detail`。
@@ -195,6 +199,20 @@ Recombee 相关字段要等爬取经过该视频后才有值。播放仍应走 `
 
 软删除：行保留，但之后除 `/api/videos?deleted=true` 外任何接口都不再返回它。
 返回 `{"ok": true}`，不存在或已删除返回 404。
+
+## 收藏
+
+收藏记在 `videos` 表的 `favourite` 列（收藏时间，未收藏为 `NULL`），用
+`GET /api/videos?favourite=true` 列出。URL 先规范化，镜像域名 / `/dm<N>/` 链接指向同一行。
+
+### PUT `/api/favourites?url=`
+
+加入收藏；已收藏的保留原收藏时间。返回 `{"ok": true, "favourite": true}`，
+库里没有该视频或已软删除返回 404。
+
+### DELETE `/api/favourites?url=`
+
+取消收藏。返回 `{"ok": true, "favourite": false}`，库里没有该视频或已软删除返回 404。
 
 ## 数据查询
 

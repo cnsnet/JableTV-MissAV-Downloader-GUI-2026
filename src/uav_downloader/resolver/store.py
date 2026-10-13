@@ -97,17 +97,20 @@ CREATE TABLE IF NOT EXISTS videos (
     updated_at       INTEGER NOT NULL,
     -- Set by remove(): the row is kept (listings won't re-add it) but the
     -- video is no longer returned anywhere except list_page(deleted=True).
-    deleted_at       INTEGER
+    deleted_at       INTEGER,
+    -- When the user added it to their favourites; NULL if not a favourite.
+    favourite        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_videos_site_slug ON videos (site, slug);
 CREATE INDEX IF NOT EXISTS idx_videos_created ON videos (created_at);
+CREATE INDEX IF NOT EXISTS idx_videos_favourite ON videos (favourite);
 '''
 
 # PRAGMA user_version: 1 = id is the URL slug (was the upper-case code),
 # 2 = deleted_at column, 3 = has_chinese_subtitle/is_uncensored_leak columns,
 # 4 = MissAV URLs without the /dm<N>/ prefix, 5 = video_details.preview,
-# 6 = videos and video_details merged into one videos table.
-_SCHEMA_VERSION = 6
+# 6 = videos and video_details merged into one videos table, 7 = favourite.
+_SCHEMA_VERSION = 7
 
 VERSION_FLAGS = ('has_chinese_subtitle', 'is_uncensored_leak')
 
@@ -144,6 +147,10 @@ def _migrate(conn: sqlite3.Connection):
         if 'videos' in tables:
             _migrate_legacy_videos(conn, version)
         _merge_tables(conn, 'videos' in tables, 'video_details' in tables)
+    # Before _SCHEMA, whose index on favourite needs the column.
+    columns = _columns(conn, 'videos')
+    if columns and 'favourite' not in columns:
+        conn.execute('ALTER TABLE videos ADD COLUMN favourite INTEGER')
     conn.executescript(_SCHEMA)
     conn.execute(f'PRAGMA user_version = {_SCHEMA_VERSION}')
 
@@ -384,10 +391,11 @@ _TITLE_COLUMNS = ('title', 'title_ja', 'title_cn', 'title_zh')
 
 
 def list_page(page: int, size: int, site: str | None = None,
-              deleted: bool = False,
-              search: str | None = None) -> tuple[list[dict], int]:
+              deleted: bool = False, search: str | None = None,
+              favourite: bool = False) -> tuple[list[dict], int]:
     """One page of stored rows, newest first, plus their count: the live
     ones, or with *deleted* the removed ones (most recently removed first).
+    *favourite* keeps only the favourites (most recently added first).
     *search* matches the code anywhere in the slug (ipx -> ipx-789,
     ipx-789-chinese-subtitle ...) or any of the titles; exact and prefix
     code matches come first."""
@@ -395,6 +403,8 @@ def list_page(page: int, size: int, site: str | None = None,
         where, order = 'WHERE deleted_at IS NOT NULL', 'deleted_at DESC, url'
     else:
         where, order = 'WHERE deleted_at IS NULL', 'created_at DESC, url'
+    if favourite:
+        where, order = where + ' AND favourite IS NOT NULL', 'favourite DESC, url'
     args, order_args = [], []
     if site:
         where, args = where + ' AND site = ?', [site]
@@ -427,6 +437,23 @@ def remove(url: str) -> bool:
             'UPDATE videos SET deleted_at = ? WHERE url = ? AND deleted_at IS NULL',
             (int(time.time()), canonical))
         return cur.rowcount > 0
+
+
+def set_favourite(url: str, favourite: bool) -> bool:
+    """Add a live row to the favourites or take it out (adding one already
+    there keeps its time); False if the URL isn't stored or was removed."""
+    canonical, _ = normalize_url(url)
+    value = 'COALESCE(favourite, ?)' if favourite else 'NULL'
+    args = (int(time.time()),) if favourite else ()
+    with _connect() as conn:
+        cur = conn.execute(
+            f'UPDATE videos SET favourite = {value}'
+            ' WHERE url = ? AND deleted_at IS NULL', (*args, canonical))
+        return cur.rowcount > 0
+
+
+def is_favourite(row: dict | None) -> bool:
+    return bool(row and row.get('favourite') is not None)
 
 
 _UNRESOLVED = 'site = ? AND resolved_url IS NULL AND deleted_at IS NULL'
