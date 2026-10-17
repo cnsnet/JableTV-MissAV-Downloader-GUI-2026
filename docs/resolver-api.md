@@ -1,13 +1,13 @@
 # UAV Resolver API
 
-Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolver/app.py](../src/uav_downloader/resolver/app.py)），
+Resolver 是给 Android 客户端和网页版（PWA）用的 HTTP 服务（[src/uav_downloader/resolver/app.py](../src/uav_downloader/resolver/app.py)），
 负责浏览站点、解析播放地址、提交远程下载，以及把视频信息存进 SQLite（[store.py](../src/uav_downloader/resolver/store.py)）。
 
 > 本文档只记录当前有哪些接口；每次增删或修改接口后同步更新接口总数和对应表格。
 
 ## 概览
 
-`/api` 下共 **21 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health`。
+`/api` 下共 **22 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health` 和网页版（见文末「网页版」）。
 
 | # | 方法 | 路径 | 分组 |
 |---|---|---|---|
@@ -32,10 +32,11 @@ Resolver 是给 Android 客户端用的 HTTP 服务（[src/uav_downloader/resolv
 | 19 | DELETE | `/api/favourites` | 收藏 |
 | 20 | POST | `/api/query` | 数据查询 |
 | 21 | GET | `/api/query/tables` | 数据查询 |
+| 22 | GET | `/api/play/hls` | 播放代理 |
 
-**认证**：除 `/health` 和 `/api/browse/thumb` 外，所有接口都要带请求头
-`X-API-Key: <RESOLVER_API_KEY>`，否则返回 401。`/api/browse/thumb` 还可以用
-query 参数 `api_key=` 传 key（图片加载库加不了请求头）。
+**认证**：除 `/health` 和网页版静态文件外，所有接口都要带请求头
+`X-API-Key: <RESOLVER_API_KEY>`，否则返回 401。`/api/browse/thumb` 和 `/api/play/hls` 还可以用
+query 参数 `api_key=` 传 key（图片加载库和 `<video>` 加不了请求头）。
 
 **站点**：`{site}` 取 `jabletv` 或 `missav`，其他值返回 404。
 
@@ -240,6 +241,25 @@ Recombee 相关字段要等爬取经过该视频后才有值。播放仍应走 `
 ### GET `/api/query/tables`
 
 库里有哪些表：`{"tables": ["videos"]}`。
+
+## 播放代理
+
+### GET `/api/play/hls?u=&ref=&api_key=`
+
+给网页版用的 HLS 代理：Safari 的 `<video>` 设置不了 `/api/detail` 返回的 Referer / Origin，
+所以由 resolver 带上 `ref`（Referer，Origin 由它推出）去抓 `u`。
+
+- 内容以 `#EXTM3U` 开头时当作播放列表返回（`application/vnd.apple.mpegurl`），
+  其中每个变体 / 分片 / `URI="..."`（`EXT-X-KEY`、`EXT-X-MAP` 等）都改写成同样走本接口的相对地址 `hls?u=...`；
+- 否则原样返回（分片），CDN 伪装成 `image/*` 等类型的改成 `video/mp2t`（`.mp4/.m4s` 为 `video/mp4`）。
+
+`u` 只接受 http/https，否则 400；抓取失败或上游返回 4xx/5xx 时返回 502。
+
+## 网页版
+
+`GET /` 跳转到 `/app/`，那里是网页版客户端（[src/uav_downloader/resolver/web/](../src/uav_downloader/resolver/web/)），
+功能同 Android 客户端，主要给 iOS 用（Safari「添加到主屏幕」）。和 API 同源，API Key 存在浏览器 localStorage。
+打开 `/app/?url=<视频页 URL>` 会直接进入「解析下载」并填好网址。
 
 ## 环境变量
 

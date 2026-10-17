@@ -18,17 +18,19 @@ import re
 import sqlite3
 import threading
 import time
-from urllib.parse import quote, urlsplit, urlunsplit
+from pathlib import Path
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from uav_downloader import sites as M3U8Sites
 from uav_downloader.core import remote_downloader
 from uav_downloader.core.config import headers as _default_headers
-from uav_downloader.sites.base import MirrorsBlockedError, fetch_with_mirrors
+from uav_downloader.sites.base import MirrorsBlockedError, _http_get, fetch_with_mirrors
 from uav_downloader.sites.jabletv import JableTVBrowser, SiteJableTV
 from uav_downloader.sites.missav import MissAVBrowser, SiteMissAV
 from uav_downloader.i18n.locales import set_lang
@@ -1237,3 +1239,101 @@ def browse_thumb(
             status_code=502, detail=f'thumbnail fetch failed: {exc}') from exc
     content_type = resp.headers.get('Content-Type', 'image/jpeg')
     return Response(content=resp.content, media_type=content_type)
+
+
+# ── HLS proxy for the web client ────────────────────────────────────────
+# The Android player sends the Referer/Origin /api/detail returns; Safari's
+# <video> can't set request headers, so the web client plays through here
+# instead. Playlists are rewritten so every variant/segment/key they name
+# comes back through this endpoint too.
+
+_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
+
+
+def _hls_proxy_url(target: str, ref: str, api_key: str) -> str:
+    # Relative to /api/play/hls itself, so it also works behind a path prefix.
+    return (f'hls?u={quote(target, safe="")}&ref={quote(ref, safe="")}'
+            f'&api_key={quote(api_key, safe="")}')
+
+
+def _rewrite_playlist(text: str, base_url: str, ref: str, api_key: str) -> str:
+    def proxied(uri: str) -> str:
+        return _hls_proxy_url(urljoin(base_url, uri.strip()), ref, api_key)
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+        elif stripped.startswith('#'):
+            # EXT-X-KEY / EXT-X-MAP / EXT-X-MEDIA ... carry theirs as URI="...".
+            lines.append(_URI_ATTR_RE.sub(
+                lambda m: f'URI="{proxied(m.group(1))}"', line))
+        else:
+            lines.append(proxied(stripped))
+    return '\n'.join(lines) + '\n'
+
+
+def _segment_type(url: str, content_type: str) -> str:
+    """CDNs serve segments as image/* or octet-stream to look innocent;
+    Safari wants a video type."""
+    path = urlsplit(url).path.lower()
+    if path.endswith(('.mp4', '.m4s', '.m4v')):
+        return 'video/mp4'
+    if path.endswith('.key'):
+        return 'application/octet-stream'
+    if not content_type or content_type.startswith(
+            ('image/', 'text/', 'application/octet-stream', 'binary/')):
+        return 'video/mp2t'
+    return content_type
+
+
+@app.get('/api/play/hls')
+def play_hls(
+        u: str, ref: str = '', x_api_key: str | None = Header(default=None),
+        api_key: str | None = None):
+    # <video> loads plain URLs, so the key comes as a query param here too.
+    key = x_api_key or api_key
+    if key != RESOLVER_API_KEY:
+        raise HTTPException(status_code=401, detail='invalid or missing API key')
+    if urlsplit(u).scheme not in ('http', 'https'):
+        raise HTTPException(status_code=400, detail='unsupported url')
+
+    req_headers = dict(_default_headers)
+    if ref:
+        split = urlsplit(ref)
+        req_headers['Referer'] = ref
+        req_headers['Origin'] = f'{split.scheme}://{split.netloc}'
+    try:
+        resp = _http_get(u, req_headers, timeout=20)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'hls fetch failed: {exc}') from exc
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502, detail=f'hls fetch failed: HTTP {resp.status_code}')
+
+    body = resp.content
+    if body[:7] == b'#EXTM3U':
+        playlist = _rewrite_playlist(
+            body.decode('utf-8', 'replace'), str(resp.url or u), ref, key)
+        return Response(content=playlist, media_type='application/vnd.apple.mpegurl',
+                        headers={'Cache-Control': 'no-store'})
+    return Response(
+        content=body,
+        media_type=_segment_type(u, resp.headers.get('Content-Type', '')),
+        headers={'Cache-Control': 'private, max-age=3600'})
+
+
+# ── Web client (PWA) ────────────────────────────────────────────────────
+# A browser version of the Android app, mainly for iOS ("Add to Home
+# Screen"); same origin as the API, so it needs no CORS.
+
+_WEB_DIR = Path(__file__).with_name('web')
+
+
+@app.get('/', include_in_schema=False)
+def web_root():
+    return RedirectResponse('/app/')
+
+
+app.mount('/app', StaticFiles(directory=_WEB_DIR, html=True), name='web')

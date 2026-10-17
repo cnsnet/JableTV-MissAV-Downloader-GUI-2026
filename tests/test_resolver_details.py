@@ -375,3 +375,68 @@ def test_full_crawl_endpoint_takes_a_query(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         resolver_app.full_crawl_search(resolver_app.FullCrawlRequest(query=' '), key)
     assert exc.value.status_code == 400
+
+
+class _FakeResp:
+    def __init__(self, content, url, content_type=''):
+        self.content = content
+        self.url = url
+        self.status_code = 200
+        self.headers = {'Content-Type': content_type} if content_type else {}
+
+
+def test_play_hls_rewrites_playlists_and_proxies_segments(monkeypatch):
+    from urllib.parse import parse_qsl
+    from fastapi import HTTPException
+    calls = []
+    master = b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n720p/video.m3u8\n'
+    media = (b'#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:4,\n'
+             b'seg0.jpeg\n#EXTINF:4,\nhttps://other.cdn/seg1.jpeg\n#EXT-X-ENDLIST\n')
+
+    def fake_get(url, headers=None, timeout=20):
+        calls.append((url, headers))
+        if url.endswith('playlist.m3u8'):
+            return _FakeResp(master, url)
+        if url.endswith('video.m3u8'):
+            return _FakeResp(media, url)
+        return _FakeResp(b'Gsegment', url, 'image/jpeg')
+
+    monkeypatch.setattr(resolver_app, '_http_get', fake_get)
+    ref = 'https://missav.ai/'
+
+    def get(proxied):
+        """Follows one rewritten playlist line, as the player would."""
+        assert proxied.startswith('hls?')
+        return resolver_app.play_hls(x_api_key=None, **dict(parse_qsl(proxied[4:])))
+
+    with pytest.raises(HTTPException) as exc:
+        resolver_app.play_hls(x_api_key=None, u='https://cdn/a/playlist.m3u8')
+    assert exc.value.status_code == 401
+    resp = resolver_app.play_hls(x_api_key=None, u='https://cdn/a/playlist.m3u8', ref=ref, api_key='test-key')
+    assert resp.media_type == 'application/vnd.apple.mpegurl'
+    variant = resp.body.decode().splitlines()[2]
+    assert variant == ('hls?u=https%3A%2F%2Fcdn%2Fa%2F720p%2Fvideo.m3u8'
+                       '&ref=https%3A%2F%2Fmissav.ai%2F&api_key=test-key')
+    assert calls[-1][1]['Referer'] == ref and calls[-1][1]['Origin'] == 'https://missav.ai'
+
+    lines = get(variant).body.decode().splitlines()
+    assert 'URI="hls?u=https%3A%2F%2Fcdn%2Fa%2F720p%2Fkey.bin&' in lines[1]
+    assert lines[3].startswith('hls?u=https%3A%2F%2Fcdn%2Fa%2F720p%2Fseg0.jpeg&')
+    assert lines[5].startswith('hls?u=https%3A%2F%2Fother.cdn%2Fseg1.jpeg&')
+    assert calls[-1][1]['Referer'] == ref
+
+    seg = get(lines[3])
+    assert seg.body == b'Gsegment'
+    assert seg.media_type == 'video/mp2t'
+
+    with pytest.raises(HTTPException) as exc:
+        resolver_app.play_hls(x_api_key=None, u='file:///etc/passwd', api_key='test-key')
+    assert exc.value.status_code == 400
+
+
+def test_web_client_is_served():
+    routes = {getattr(r, 'path', None): r for r in resolver_app.app.routes}
+    assert resolver_app.web_root().headers['location'] == '/app/'
+    assert (resolver_app._WEB_DIR / 'index.html').is_file()
+    assert (resolver_app._WEB_DIR / 'manifest.webmanifest').is_file()
+    assert '/app' in routes

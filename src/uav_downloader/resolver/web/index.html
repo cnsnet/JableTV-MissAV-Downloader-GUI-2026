@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Plays CDN URLs without our page as Referer, like the Android player. -->
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="UAV">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>UAV Resolver</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #212121; --muted: #757575; --surface: #efefef;
+  --card: #f7f2fa; --primary: #6750a4; --on-primary: #ffffff; --error: #b3261e;
+  --pill: #616161; --bar: #212121; --border: #cac4d0;
+  --sub: #991b1b; --leak: #1e40af; --fav: #ef4444;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212; --fg: #e6e1e5; --muted: #a0a0a0; --surface: #2a2a2a;
+    --card: #1d1b20; --primary: #d0bcff; --on-primary: #381e72; --error: #f2b8b5;
+    --pill: #4a4a4a; --bar: #000000; --border: #49454f;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:disabled { opacity: .38; cursor: default; }
+svg { width: 22px; height: 22px; fill: currentColor; display: block; }
+.hidden { display: none !important; }
+
+.screen, .layer { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Top bar */
+.topbar { display: flex; align-items: center; gap: 8px; padding: calc(4px + env(safe-area-inset-top)) 12px 4px; position: relative; }
+.searchbar { flex: 1; display: flex; align-items: center; gap: 6px; height: 44px; padding: 5px; border-radius: 8px; background: var(--surface); }
+.searchbar input { flex: 1; min-width: 0; height: 100%; padding: 0 12px; border: 0; outline: 0; background: transparent; color: var(--fg); font-size: 16px; }
+.searchbar input::placeholder { color: #9e9e9e; }
+.searchbar input::-webkit-search-cancel-button { display: none; }
+.pill { height: 100%; padding: 0 10px; border-radius: 8px; background: var(--pill); color: #fff; }
+.icon-btn { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; }
+.menu { position: absolute; right: 12px; top: calc(48px + env(safe-area-inset-top)); z-index: 10; min-width: 140px; padding: 6px 0;
+  background: var(--bg); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.menu button { display: block; width: 100%; padding: 12px 16px; text-align: left; }
+.menu button:active { background: var(--surface); }
+
+.progress { height: 3px; overflow: hidden; background: color-mix(in srgb, var(--primary) 25%, transparent); }
+.progress::after { content: ""; display: block; height: 100%; width: 40%; background: var(--primary); animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.error { color: var(--error); padding: 4px 12px; word-break: break-word; }
+.empty { color: var(--muted); padding: 32px 16px; text-align: center; grid-column: 1 / -1; }
+
+/* Video cards */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; padding: 1px; align-content: start; }
+@media (min-width: 700px) { .grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); } }
+.card { background: var(--card); position: relative; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: pointer; }
+.card.sel { box-shadow: inset 0 0 0 2px var(--primary); }
+.thumb { position: relative; aspect-ratio: 16 / 9; background: var(--surface); overflow: hidden; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-touch-callout: none; }
+.ttl { margin: 8px; font-size: 12.5px; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dur { position: absolute; right: 4px; bottom: 4px; padding: 1px 4px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; }
+.badges { display: flex; gap: 4px; }
+.thumb .badges { position: absolute; left: 4px; bottom: 4px; }
+.badge { padding: 1px 4px; border-radius: 4px; color: #fff; font-size: 11px; }
+.badge.sub { background: color-mix(in srgb, var(--sub) 75%, transparent); }
+.badge.leak { background: color-mix(in srgb, var(--leak) 75%, transparent); }
+.chk, .fav { position: absolute; top: 4px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.4); color: #fff; }
+.chk { left: 4px; box-shadow: inset 0 0 0 2px rgba(255,255,255,.9); }
+.chk svg { width: 16px; height: 16px; opacity: 0; }
+.card.sel .chk { background: var(--primary); color: var(--on-primary); }
+.card.sel .chk svg { opacity: 1; }
+.fav { right: 4px; }
+.fav svg { width: 16px; height: 16px; }
+.fav.on { color: var(--fav); }
+
+/* Pager / selection bar */
+.pager { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 2px 0; font-size: 12.5px; }
+.selbar { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--card); border-top: 1px solid var(--border); }
+.selbar span { flex: 1; }
+.btn { height: 34px; padding: 0 14px; border-radius: 8px; background: var(--primary); color: var(--on-primary); }
+.btn.outline { background: transparent; color: var(--primary); box-shadow: inset 0 0 0 1px var(--border); }
+.btn.wide { flex: 1; height: 40px; }
+
+/* Pages */
+.darkbar { display: flex; align-items: center; gap: 12px; height: calc(56px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 4px 0; background: var(--bar); color: #fff; }
+.darkbar .code { font-size: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pagebar { display: flex; align-items: center; gap: 8px; padding: calc(12px + env(safe-area-inset-top)) 12px 8px; font-weight: 700; }
+.cover { position: relative; aspect-ratio: 16 / 9; background: var(--surface); }
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bigfav { position: absolute; right: 8px; bottom: 8px; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.4); color: #fff; }
+.bigfav.on { color: var(--fav); }
+.info { padding: 12px 16px; }
+.info .code2 { font-size: 22px; font-weight: 500; }
+.info .badges { margin-top: 6px; }
+.info .dtitle { margin-top: 8px; font-size: 16px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.status { margin-top: 8px; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.status.err { color: var(--error); font-size: 14px; }
+.status .retry { color: var(--primary); padding: 6px 8px; }
+.actions { display: flex; gap: 8px; margin-top: 16px; }
+.sq { width: 48px; height: 48px; border-radius: 4px; display: grid; place-items: center; color: var(--primary); box-shadow: inset 0 0 0 1px var(--border); }
+.sq svg { width: 26px; height: 26px; }
+.rel-title { display: flex; align-items: center; gap: 8px; padding: 16px 16px 8px; font-size: 16px; font-weight: 700; }
+.spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; display: inline-block; animation: rot .8s linear infinite; }
+.sq .spin { width: 24px; height: 24px; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+.form { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 8px; }
+.form label { font-size: 12.5px; color: var(--muted); }
+.form input { height: 48px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 16px; outline: 0; }
+.form input:focus { border-color: var(--primary); border-width: 2px; padding: 0 11px; }
+.row { display: flex; gap: 8px; align-items: center; }
+.msg { white-space: pre-wrap; word-break: break-all; color: var(--primary); }
+.msg.err { color: var(--error); }
+.hist { margin: 4px 16px; padding: 10px; border-radius: 12px; background: var(--card); word-break: break-all; }
+.hist .t { font-weight: 500; }
+.hist .s { font-size: 12px; color: var(--muted); }
+.hist .ok { font-size: 12px; color: var(--primary); }
+.hist .bad { font-size: 12px; color: var(--error); }
+
+/* Category picker */
+.sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.sheet { width: 100%; max-width: 420px; max-height: 80vh; display: flex; flex-direction: column; border-radius: 16px; background: var(--bg); overflow: hidden; }
+.sheet .scroll { padding: 8px 0; }
+.sheet .item { display: flex; width: 100%; padding: 12px 20px; text-align: left; }
+.sheet .item span:first-child { flex: 1; }
+.sheet .item .n { color: var(--muted); font-size: 12px; }
+.sheet .head { padding: 12px 20px 4px; font-size: 12.5px; font-weight: 700; color: var(--primary); }
+.sheet .note { padding: 20px; color: var(--muted); }
+.sheet .note.err { color: var(--error); }
+
+/* Player */
+.player { background: #000; color: #fff; }
+.player video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.gest { position: absolute; inset: 0; touch-action: none; }
+.pctl { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; transition: opacity .2s;
+  background: linear-gradient(rgba(0,0,0,.55), transparent 25%, transparent 75%, rgba(0,0,0,.55)); }
+.pctl.off { opacity: 0; }
+.pctl > * { pointer-events: auto; }
+.pctl.off > * { pointer-events: none; }
+.ptop { display: flex; align-items: center; gap: 8px; padding: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left)); }
+.ptitle { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmid { align-self: center; display: flex; align-items: center; gap: 40px; }
+.pbtn { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.4); font-size: 13px; }
+.pbtn.big { width: 68px; height: 68px; }
+.pbtn.big svg { width: 40px; height: 40px; }
+.pbot { display: flex; align-items: center; gap: 10px; padding: 8px calc(16px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pbot input { flex: 1; accent-color: #fff; }
+.seekhint, .pmsg { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); padding: 8px 14px; border-radius: 8px; background: rgba(0,0,0,.65); font-size: 18px; font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; }
+.pmsg { font-size: 14px; white-space: normal; max-width: 80%; text-align: center; }
+
+#toast { position: fixed; left: 50%; bottom: calc(72px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100; max-width: calc(100% - 32px);
+  padding: 12px 16px; border-radius: 4px; background: #313033; color: #f4eff4; box-shadow: 0 2px 8px rgba(0,0,0,.3); transition: opacity .2s; pointer-events: none; }
+#toast.err { background: #8c1d18; }
+</style>
+</head>
+<body>
+
+<div class="screen" id="main">
+  <header class="topbar">
+    <div class="searchbar">
+      <input id="q" type="search" placeholder="关键字" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search">
+      <button class="pill" id="btn-manko">Manko</button>
+      <button class="pill" id="btn-miss">Miss</button>
+    </div>
+    <button class="icon-btn" id="btn-menu" aria-label="菜单"></button>
+    <div class="menu hidden" id="menu">
+      <button data-menu="nav">导航</button>
+      <button data-menu="menu">菜单</button>
+      <button data-menu="tags">标签</button>
+      <button data-menu="favourite">我的收藏</button>
+      <button data-menu="parse">解析下载</button>
+      <button data-menu="settings">设置</button>
+    </div>
+  </header>
+  <div class="progress hidden" id="progress"></div>
+  <div class="error hidden" id="error"></div>
+  <div class="scroll" id="main-scroll"><div class="grid" id="grid"></div></div>
+  <div class="bottom">
+    <div class="pager">
+      <button class="icon-btn" id="prev" aria-label="上一页"></button>
+      <span id="pageno">第 1 页</span>
+      <button class="icon-btn" id="next" aria-label="下一页"></button>
+    </div>
+    <div class="selbar hidden" id="selbar"></div>
+  </div>
+</div>
+
+<div id="toast" style="opacity:0"></div>
+
+<script>
+'use strict';
+
+// ── Basics ─────────────────────────────────────────────────────────────
+const API = new URL('../api/', location.href).href;
+const $ = (sel, root = document) => root.querySelector(sel);
+const enc = encodeURIComponent;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const svg = d => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+const ICON = {
+  back: svg('M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z'),
+  fwd: svg('M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z'),
+  menu: svg('M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z'),
+  check: svg('M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'),
+  heart: svg('M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z'),
+  heartO: svg('M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z'),
+  play: svg('M8 5v14l11-7z'),
+  pause: svg('M6 19h4V5H6v14zm8-14v14h4V5h-4z'),
+  cloud: svg('M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z'),
+  browser: svg('M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h4v-2H5V8h14v10h-4v2h4c1.1 0 2-.9 2-2V6c0-1.1-.89-2-2-2zm-7 6l-4 4h3v6h2v-6h3l-4-4z'),
+  del: svg('M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z'),
+  close: svg('M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z'),
+};
+
+// localStorage can throw (private mode, blocked storage); everything works without it.
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let apiKey = LS.get('uav.apiKey', '');
+
+class ApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+async function api(path, { method = 'GET', params = {}, body } = {}) {
+  const url = new URL(path, API);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+  }
+  const headers = { 'X-API-Key': apiKey };
+  if (body) headers['Content-Type'] = 'application/json';
+  let resp;
+  try {
+    resp = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch (e) {
+    throw new ApiError(0, '网络错误：' + e.message);
+  }
+  const text = await resp.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
+  if (!resp.ok) {
+    let detail = json && json.detail !== undefined ? json.detail : (text || `HTTP ${resp.status}`);
+    if (typeof detail !== 'string') detail = JSON.stringify(detail);
+    throw new ApiError(resp.status, `HTTP ${resp.status}: ${detail}`);
+  }
+  return json;
+}
+
+const thumbUrl = u => u ? `${API}browse/thumb?url=${enc(u)}&api_key=${enc(apiKey)}` : '';
+
+let toastTimer = 0;
+function toast(msg, isError = false) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.toggle('err', isError);
+  el.style.opacity = '1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Full-screen pages stack in DOM order on top of the main screen.
+function layer(cls = '') {
+  const el = document.createElement('div');
+  el.className = 'layer ' + cls;
+  document.body.insertBefore(el, $('#toast'));
+  return el;
+}
+
+// ── Shared video actions ───────────────────────────────────────────────
+// Every live list / detail page, so a favourite or delete done anywhere
+// shows everywhere (the Android app passes callbacks down for the same).
+const listeners = new Set();
+const broadcastFav = (url, val) => listeners.forEach(l => l.applyFavourite(url, val));
+const broadcastRemoved = url => listeners.forEach(l => l.applyRemoved(url));
+
+async function toggleFavourite(url, current) {
+  try {
+    await api('favourites', { method: current ? 'DELETE' : 'PUT', params: { url } });
+    broadcastFav(url, !current);
+    toast(current ? '已取消收藏' : '已收藏');
+    return true;
+  } catch (e) {
+    toast(e.message || (current ? '取消收藏失败' : '收藏失败'), true);
+    return false;
+  }
+}
+
+async function removeUrls(urls) {
+  const removed = [];
+  let lastError = '';
+  for (const url of urls) {
+    try {
+      await api('videos', { method: 'DELETE', params: { url } });
+      removed.push(url);
+    } catch (e) {
+      lastError = e.message || '删除失败';
+    }
+  }
+  removed.forEach(broadcastRemoved);
+  const fail = urls.length - removed.length;
+  return { removed, msg: fail ? `已删除 ${removed.length} 个，失败 ${fail} 个：${lastError}` : `已删除 ${removed.length} 个` };
+}
+
+const History = {
+  all: () => LS.get('uav.history', []),
+  add(entry) { LS.set('uav.history', [{ ...entry, timestamp: Date.now() }, ...this.all()].slice(0, 100)); },
+  clear: () => LS.del('uav.history'),
+};
+
+async function submitUrls(urls) {
+  let ok = 0, fail = 0;
+  for (const url of urls) {
+    try {
+      const r = await api('resolve', { method: 'POST', body: { url } });
+      ok++;
+      History.add({ url, outputName: r.output_name, success: true, message: '已提交' });
+    } catch (e) {
+      fail++;
+      History.add({ url, outputName: null, success: false, message: e.message });
+    }
+  }
+  return { ok: fail === 0, msg: fail ? `已提交 ${ok} 个，失败 ${fail} 个` : `已提交 ${ok} 个` };
+}
+
+// ── Video grid + selection bar ─────────────────────────────────────────
+// Tap a card for its detail page; the round button in its corner selects
+// it (the Android app taps to select and long-presses for detail, but a
+// long press on iOS fights the system's own touch menu).
+const badgesHtml = v => (v.has_chinese_subtitle || v.is_uncensored_leak)
+  ? `<div class="badges">${v.has_chinese_subtitle ? '<span class="badge sub">中文字幕</span>' : ''}${v.is_uncensored_leak ? '<span class="badge leak">无码影片</span>' : ''}</div>`
+  : '';
+const favHtml = on => `<button class="fav${on ? ' on' : ''}" data-act="fav" aria-label="${on ? '取消收藏' : '收藏'}">${on ? ICON.heart : ICON.heartO}</button>`;
+const cardHtml = v => `<div class="card" data-url="${esc(v.url)}">
+  <div class="thumb">${v.thumbnail ? `<img loading="lazy" src="${esc(thumbUrl(v.thumbnail))}" alt="">` : ''}
+    ${badgesHtml(v)}${v.duration ? `<span class="dur">${esc(v.duration)}</span>` : ''}
+    <button class="chk" data-act="select" aria-label="选择">${ICON.check}</button>${favHtml(v.favourite)}
+  </div>
+  <div class="ttl">${esc(v.title)}</div>
+</div>`;
+
+class VideoList {
+  constructor(grid, selbar, { dropUnfavourite = () => false } = {}) {
+    Object.assign(this, { grid, selbar, dropUnfavourite, videos: [], selected: new Set(), busy: '' });
+    grid.addEventListener('click', e => this.onClick(e));
+    selbar.addEventListener('click', e => this.onSelbar(e));
+    listeners.add(this);
+  }
+  dispose() { listeners.delete(this); }
+  find(url) { return this.videos.find(v => v.url === url); }
+  cardOf(url) { return [...this.grid.children].find(c => c.dataset.url === url); }
+
+  set(videos, emptyText = '') {
+    this.videos = videos;
+    this.selected.clear();
+    this.grid.innerHTML = videos.length ? videos.map(cardHtml).join('')
+      : (emptyText ? `<div class="empty">${esc(emptyText)}</div>` : '');
+    this.renderSel();
+  }
+
+  onClick(e) {
+    const card = e.target.closest('.card');
+    const v = card && this.find(card.dataset.url);
+    if (!v) return;
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'select') {
+      if (this.selected.has(v.url)) this.selected.delete(v.url); else this.selected.add(v.url);
+      card.classList.toggle('sel', this.selected.has(v.url));
+      this.renderSel();
+    } else if (act === 'fav') {
+      toggleFavourite(v.url, v.favourite);
+    } else {
+      openDetail(v);
+    }
+  }
+
+  renderSel() {
+    const n = this.selected.size;
+    this.selbar.classList.toggle('hidden', n === 0);
+    if (!n) return;
+    const dis = this.busy ? 'disabled' : '';
+    this.selbar.innerHTML = `<span>已选 ${n} 个</span>
+      <button class="btn outline" data-act="remove" ${dis}>${this.busy === 'remove' ? '删除中...' : '删除'}</button>
+      <button class="btn" data-act="submit" ${dis}>${this.busy === 'submit' ? '提交中...' : '下载'}</button>`;
+  }
+
+  async onSelbar(e) {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act || this.busy) return;
+    const urls = [...this.selected];
+    if (act === 'remove') {
+      if (!confirm(`删除选中的 ${urls.length} 个视频？删除后它们将不再出现在任何列表中。`)) return;
+      this.busy = 'remove';
+      this.renderSel();
+      const { removed, msg } = await removeUrls(urls);
+      this.busy = '';
+      this.renderSel();
+      toast(msg, removed.length !== urls.length);
+    } else {
+      this.busy = 'submit';
+      this.renderSel();
+      const { ok, msg } = await submitUrls(urls);
+      this.busy = '';
+      this.selected.clear();
+      [...this.grid.children].forEach(c => c.classList.remove('sel'));
+      this.renderSel();
+      toast(msg, !ok);
+    }
+  }
+
+  applyFavourite(url, val) {
+    const v = this.find(url);
+    if (!v) return;
+    // A video taken out of the favourites leaves the favourites list.
+    if (!val && this.dropUnfavourite()) return this.applyRemoved(url);
+    v.favourite = val;
+    const btn = this.cardOf(url)?.querySelector('.fav');
+    if (btn) btn.outerHTML = favHtml(val);
+  }
+
+  applyRemoved(url) {
+    if (!this.find(url)) return;
+    this.videos = this.videos.filter(v => v.url !== url);
+    this.selected.delete(url);
+    this.cardOf(url)?.remove();
+    this.renderSel();
+  }
+}
+
+// ── Main screen ────────────────────────────────────────────────────────
+// site: 'jabletv' / 'missav', or the resolver's own lists 'stored'
+// (/api/videos) and 'favourite' (/api/videos?favourite=true).
+const M = { site: '', category: null, search: '', page: 1, lastPage: null, seq: 0 };
+const mainList = new VideoList($('#grid'), $('#selbar'), { dropUnfavourite: () => M.site === 'favourite' });
+const qInput = $('#q');
+
+function setLoading(on) { $('#progress').classList.toggle('hidden', !on); }
+function setError(msg) {
+  const el = $('#error');
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+function renderPager() {
+  $('#pageno').textContent = `第 ${M.page} 页`;
+  $('#prev').disabled = M.page <= 1;
+  $('#next').disabled = !mainList.videos.length || (M.lastPage != null && M.page >= M.lastPage);
+}
+
+async function loadMain() {
+  const stored = M.site === 'stored' || M.site === 'favourite';
+  if (!apiKey || !M.site || (!stored && !M.search && !M.category)) return;
+  const seq = ++M.seq;
+  setLoading(true);
+  setError('');
+  M.lastPage = null;
+  try {
+    let videos;
+    if (stored) {
+      const r = await api('videos', { params: { page: M.page, search: M.search, favourite: M.site === 'favourite' ? 'true' : '' } });
+      M.lastPage = r.pages;
+      videos = r.videos;
+    } else if (M.search) {
+      videos = (await api(`browse/${M.site}/search`, { params: { q: M.search, page: M.page } })).videos;
+    } else {
+      videos = (await api(`browse/${M.site}/videos`, { params: { category_url: M.category.url, page: M.page } })).videos;
+    }
+    if (seq !== M.seq) return;
+    mainList.set(videos, M.site === 'favourite' && M.page === 1 && !M.search ? '还没有收藏' : '没有视频');
+    $('#main-scroll').scrollTop = 0;
+  } catch (e) {
+    if (seq !== M.seq) return;
+    setError(e.message || '列表加载失败');
+    mainList.set([]);
+    if (e.status === 401) openSettings();
+  } finally {
+    if (seq === M.seq) setLoading(false);
+    renderPager();
+  }
+}
+
+function go(changes) {
+  Object.assign(M, { page: 1 }, changes);
+  loadMain();
+}
+
+const categories = {};
+async function ensureCategories(site) {
+  if (categories[site]?.length) return categories[site];
+  let cats = LS.get('uav.cat.' + site, null);
+  if (!cats?.length) {
+    cats = (await api(`browse/${site}/categories`)).categories || [];
+    if (cats.length) LS.set('uav.cat.' + site, cats);
+  }
+  return (categories[site] = cats);
+}
+
+async function openSiteHome(site) {
+  setLoading(true);
+  setError('');
+  try {
+    const cats = await ensureCategories(site);
+    qInput.value = '';
+    go({ site, category: cats[0] || null, search: '' });
+  } catch (e) {
+    setLoading(false);
+    setError(e.message || '分类加载失败');
+  }
+}
+
+// With a keyword in the bar, these search the stored list instead.
+const openStored = () => go({ site: 'stored', category: null, search: qInput.value.trim() });
+const openFavourites = () => go({ site: 'favourite', category: null, search: qInput.value.trim() });
+
+function searchMiss() {
+  const q = qInput.value.trim();
+  if (!q) return openSiteHome('missav');
+  qInput.blur();
+  go({ site: 'missav', category: null, search: q });
+}
+
+$('#btn-manko').onclick = () => { qInput.blur(); openStored(); };
+$('#btn-miss').onclick = searchMiss;
+qInput.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  qInput.blur();
+  if (M.site === 'stored' || M.site === 'favourite') go({ search: qInput.value.trim() });
+  else searchMiss();
+});
+$('#prev').innerHTML = ICON.back;
+$('#next').innerHTML = ICON.fwd;
+$('#prev').onclick = () => { if (M.page > 1) { M.page--; loadMain(); } };
+$('#next').onclick = () => { M.page++; loadMain(); };
+
+listeners.add({
+  // Kept in step so the pager doesn't offer a next page of nothing.
+  applyFavourite() { renderPager(); },
+  applyRemoved() { renderPager(); },
+});
+
+const menu = $('#menu');
+$('#btn-menu').innerHTML = ICON.menu;
+$('#btn-menu').onclick = e => { e.stopPropagation(); menu.classList.toggle('hidden'); };
+document.addEventListener('click', () => menu.classList.add('hidden'));
+menu.onclick = e => {
+  const which = e.target.closest('[data-menu]')?.dataset.menu;
+  menu.classList.add('hidden');
+  if (which === 'nav' || which === 'menu' || which === 'tags') openPicker(which);
+  else if (which === 'favourite') openFavourites();
+  else if (which === 'parse') openParse();
+  else if (which === 'settings') openSettings();
+};
+
+// ── Category picker ────────────────────────────────────────────────────
+// 导航 = MissAV's categories; 菜单 / 标签 = JableTV's categories / grouped tags.
+async function openPicker(mode) {
+  const site = mode === 'nav' ? 'missav' : 'jabletv';
+  const bg = document.createElement('div');
+  bg.className = 'sheet-bg';
+  bg.innerHTML = `<div class="sheet"><div class="scroll"><div class="note">加载中...</div></div></div>`;
+  document.body.insertBefore(bg, $('#toast'));
+  const body = $('.scroll', bg);
+  bg.onclick = e => { if (e.target === bg) bg.remove(); };
+
+  let cats;
+  try {
+    cats = await ensureCategories(site);
+  } catch (e) {
+    body.innerHTML = `<div class="note err">${esc(e.message || '分类加载失败')}</div>`;
+    return;
+  }
+  const entries = [];
+  if (mode === 'nav') cats.forEach(c => entries.push(c));
+  else if (mode === 'menu') cats.filter(c => !c.group && !c.section).forEach(c => entries.push(c));
+  else {
+    let last = '';
+    for (const c of cats.filter(c => c.group)) {
+      if (c.group !== last) entries.push({ header: (last = c.group) });
+      entries.push(c);
+    }
+  }
+  body.innerHTML = entries.length ? entries.map((c, i) => c.header
+    ? `<div class="head">${esc(c.header)}</div>`
+    : `<button class="item" data-i="${i}"><span>${esc(c.name)}</span>${c.count > 0 ? `<span class="n">${c.count}</span>` : ''}</button>`).join('')
+    : '<div class="note">没有分类</div>';
+  body.onclick = e => {
+    const i = e.target.closest('[data-i]')?.dataset.i;
+    if (i == null) return;
+    bg.remove();
+    qInput.value = '';
+    go({ site, category: entries[i], search: '' });
+  };
+}
+
+// ── Detail page ────────────────────────────────────────────────────────
+function openDetail(video) {
+  const el = layer();
+  const site = /missav/i.test(video.url) ? 'missav' : 'jabletv';
+  const S = { detail: null, loading: true, error: '', favourite: !!video.favourite, favBusy: false, dlBusy: false, rmBusy: false };
+  el.innerHTML = `
+    <header class="darkbar"><button class="icon-btn" data-act="back" aria-label="返回">${ICON.back}</button><div class="code"></div></header>
+    <div class="scroll">
+      <div class="cover"><img alt=""><button class="bigfav" data-act="fav"></button></div>
+      <div class="info">
+        <div class="code2"></div><div class="badges-slot"></div><div class="dtitle"></div><div class="status"></div>
+        <div class="actions">
+          <button class="sq" data-act="play" aria-label="播放">${ICON.play}</button>
+          <button class="sq" data-act="download" aria-label="下载">${ICON.cloud}</button>
+          <button class="sq" data-act="browser" aria-label="浏览器">${ICON.browser}</button>
+          <button class="sq" data-act="remove" aria-label="删除">${ICON.del}</button>
+        </div>
+      </div>
+      <div class="rel-title hidden">相关推荐 <span class="spin"></span></div>
+      <div class="grid rel"></div>
+    </div>
+    <div class="bottom"><div class="selbar hidden"></div></div>`;
+  const list = new VideoList($('.rel', el), $('.selbar', el));
+  const img = $('.cover img', el);
+  img.src = thumbUrl(video.thumbnail);
+
+  // The listing gives id and title, so the page shows at once; /api/detail
+  // only adds the playable URL (and maybe a translated title).
+  const code = () => (S.detail?.id || video.id || video.title.split(' ')[0] || '').toUpperCase();
+  const title = () => S.detail?.title || video.title;
+
+  function render() {
+    $('.code', el).textContent = code();
+    $('.code2', el).textContent = code();
+    $('.badges-slot', el).innerHTML = badgesHtml({
+      has_chinese_subtitle: S.detail?.has_chinese_subtitle ?? video.has_chinese_subtitle,
+      is_uncensored_leak: S.detail?.is_uncensored_leak ?? video.is_uncensored_leak,
+    });
+    $('.dtitle', el).textContent = title();
+    const st = $('.status', el);
+    st.className = 'status' + (S.error ? ' err' : '');
+    st.innerHTML = S.loading ? '<span class="spin"></span>正在获取播放地址...'
+      : S.error ? `<span>${esc(S.error)}</span><button class="retry" data-act="retry">重试</button>` : '';
+    st.classList.toggle('hidden', !S.loading && !S.error);
+    const fav = $('.bigfav', el);
+    fav.className = 'bigfav' + (S.favourite ? ' on' : '');
+    fav.disabled = S.favBusy;
+    fav.innerHTML = S.favBusy ? '<span class="spin"></span>' : (S.favourite ? ICON.heart : ICON.heartO);
+    const resolved = !!S.detail?.resolved_url;
+    $('[data-act=play]', el).disabled = !resolved;
+    const dl = $('[data-act=download]', el);
+    dl.disabled = !resolved || S.dlBusy;
+    dl.innerHTML = S.dlBusy ? '<span class="spin"></span>' : ICON.cloud;
+    const rm = $('[data-act=remove]', el);
+    rm.disabled = S.rmBusy;
+    rm.innerHTML = S.rmBusy ? '<span class="spin"></span>' : ICON.del;
+  }
+
+  async function loadDetail() {
+    S.loading = true;
+    S.error = '';
+    render();
+    try {
+      S.detail = await api('detail', { params: { url: video.url } });
+      // The large cover, swapped in once loaded so the small one doesn't flash away.
+      const big = thumbUrl(S.detail.thumbnail);
+      if (big && big !== img.src) {
+        const pre = new Image();
+        pre.onload = () => { img.src = big; };
+        pre.src = big;
+      }
+    } catch (e) {
+      S.error = e.message || '解析失败';
+    }
+    S.loading = false;
+    render();
+  }
+
+  async function loadRelated() {
+    const rt = $('.rel-title', el);
+    rt.classList.remove('hidden');
+    let videos = [];
+    try {
+      const seen = new Set([video.url]);
+      videos = (await api(`browse/${site}/related`, { params: { url: video.url } })).videos
+        .filter(v => !seen.has(v.url) && seen.add(v.url));
+    } catch {}
+    $('.spin', rt).remove();
+    rt.classList.toggle('hidden', !videos.length);
+    list.set(videos);
+  }
+
+  const self = {
+    applyFavourite(url, val) { if (url === video.url) { S.favourite = val; render(); } },
+    applyRemoved() {},
+  };
+  listeners.add(self);
+
+  function close() {
+    listeners.delete(self);
+    list.dispose();
+    el.remove();
+  }
+
+  el.addEventListener('click', async e => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn || btn.closest('.rel') || btn.closest('.selbar')) return;
+    const act = btn.dataset.act;
+    if (act === 'back') close();
+    else if (act === 'retry') loadDetail();
+    else if (act === 'fav') {
+      S.favBusy = true;
+      render();
+      await toggleFavourite(video.url, S.favourite);
+      S.favBusy = false;
+      render();
+    } else if (act === 'play' && S.detail) openPlayer(S.detail, title());
+    else if (act === 'download' && S.detail) {
+      S.dlBusy = true;
+      render();
+      // Named by id, not title: some titles are too long for a file name.
+      const outputName = `${S.detail.id || video.id || 'video'}.mp4`;
+      try {
+        const r = await api('download', { method: 'POST', body: { resolved_url: S.detail.resolved_url, output_name: outputName } });
+        History.add({ url: video.url, outputName: r.output_name, success: true, message: '已提交' });
+        toast('已提交远程下载');
+      } catch (err) {
+        History.add({ url: video.url, outputName: null, success: false, message: err.message });
+        toast(err.message, true);
+      }
+      S.dlBusy = false;
+      render();
+    } else if (act === 'browser') window.open(video.url, '_blank', 'noopener');
+    else if (act === 'remove') {
+      if (!confirm(`删除后 ${code()} 将不再出现在任何列表中。`)) return;
+      S.rmBusy = true;
+      render();
+      try {
+        await api('videos', { method: 'DELETE', params: { url: video.url } });
+        toast('已删除');
+        broadcastRemoved(video.url);
+        close();
+      } catch (err) {
+        toast(err.message || '删除失败', true);
+        S.rmBusy = false;
+        render();
+      }
+    }
+  });
+
+  render();
+  loadDetail();
+  loadRelated();
+}
+
+// ── Player ─────────────────────────────────────────────────────────────
+// Safari plays HLS itself; other browsers (desktop testing) use hls.js.
+// The CDN wants a Referer/Origin a <video> can't send, so those streams go
+// through the resolver's /api/play/hls proxy.
+const SWIPE_FULL_SEEK = 20 * 60;   // seconds a swipe across the whole width seeks, as on Android
+let hlsJs = null;
+function loadHlsJs() {
+  return hlsJs ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js';
+    s.onload = () => resolve(window.Hls);
+    s.onerror = () => { hlsJs = null; reject(new Error('hls.js 加载失败')); };
+    document.head.appendChild(s);
+  });
+}
+const proxyUrl = (u, ref) => `${API}play/hls?u=${enc(u)}&ref=${enc(ref || '')}&api_key=${enc(apiKey)}`;
+
+function openPlayer(detail, title) {
+  const el = layer('player');
+  el.innerHTML = `<video playsinline webkit-playsinline preload="auto"></video>
+    <div class="gest"></div>
+    <div class="seekhint hidden"></div>
+    <div class="pmsg hidden"></div>
+    <div class="pctl">
+      <div class="ptop"><button class="icon-btn" data-act="close" aria-label="关闭">${ICON.close}</button><div class="ptitle">${esc(title)}</div></div>
+      <div class="pmid">
+        <button class="pbtn" data-act="back10">-10s</button>
+        <button class="pbtn big" data-act="toggle" aria-label="播放/暂停">${ICON.play}</button>
+        <button class="pbtn" data-act="fwd10">+10s</button>
+      </div>
+      <div class="pbot"><span class="tcur">0:00</span><input type="range" min="0" max="0" step="1" value="0"><span class="tdur">0:00</span></div>
+    </div>`;
+  const video = $('video', el), ctl = $('.pctl', el), slider = $('input', el);
+  const hint = $('.seekhint', el), pmsg = $('.pmsg', el);
+  let hls = null, wakeLock = null, hideTimer = 0, dragging = false;
+
+  const headers = detail.headers || {};
+  const ref = headers.Referer || headers.referer || '';
+  const src = detail.resolved_url;
+  const isHls = /\.m3u8(\?|$)/i.test(src);
+  const showMsg = m => { pmsg.textContent = m; pmsg.classList.toggle('hidden', !m); };
+
+  if (!isHls || video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = isHls && ref ? proxyUrl(src, ref) : src;
+    video.play().catch(() => {});
+  } else {
+    showMsg('加载中...');
+    loadHlsJs().then(Hls => {
+      if (!el.isConnected) return;
+      if (!Hls.isSupported()) return showMsg('这个浏览器不能播放 HLS');
+      hls = new Hls();
+      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) showMsg('播放失败：' + data.details); });
+      hls.loadSource(proxyUrl(src, ref));
+      hls.attachMedia(video);
+      showMsg('');
+      video.play().catch(() => {});
+    }, e => showMsg(e.message));
+  }
+
+  function showControls(on) {
+    ctl.classList.toggle('off', !on);
+    clearTimeout(hideTimer);
+    if (on && !video.paused) hideTimer = setTimeout(() => ctl.classList.add('off'), 3500);
+  }
+  function updateTime() {
+    const d = isFinite(video.duration) ? video.duration : 0;
+    slider.max = Math.floor(d);
+    if (!dragging) slider.value = Math.floor(video.currentTime);
+    $('.tcur', el).textContent = fmtTime(dragging ? slider.value : video.currentTime);
+    $('.tdur', el).textContent = fmtTime(d);
+  }
+  const seekTo = t => { video.currentTime = Math.max(0, Math.min(t, video.duration || t)); updateTime(); };
+
+  video.addEventListener('timeupdate', updateTime);
+  video.addEventListener('durationchange', updateTime);
+  video.addEventListener('play', async () => {
+    $('[data-act=toggle]', el).innerHTML = ICON.pause;
+    showMsg('');
+    showControls(true);
+    // Screen stays on while playing (Safari 16.4+; video playback mostly does this anyway).
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  });
+  video.addEventListener('pause', () => {
+    $('[data-act=toggle]', el).innerHTML = ICON.play;
+    showControls(true);
+    wakeLock?.release().catch(() => {});
+    wakeLock = null;
+  });
+  video.addEventListener('waiting', () => showMsg('缓冲中...'));
+  video.addEventListener('playing', () => showMsg(''));
+  video.addEventListener('error', () => {
+    const err = video.error;
+    showMsg('播放失败' + (err ? `（错误 ${err.code}${err.message ? '：' + err.message : ''}）` : ''));
+  });
+
+  slider.addEventListener('input', () => { dragging = true; updateTime(); showControls(true); });
+  slider.addEventListener('change', () => { dragging = false; seekTo(+slider.value); });
+
+  function close() {
+    clearTimeout(hideTimer);
+    wakeLock?.release().catch(() => {});
+    hls?.destroy();
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    el.remove();
+  }
+
+  ctl.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') return close();
+    if (act === 'toggle') video.paused ? video.play().catch(() => {}) : video.pause();
+    else if (act === 'back10') seekTo(video.currentTime - 10);
+    else if (act === 'fwd10') seekTo(video.currentTime + 10);
+    if (act) showControls(true);
+  });
+
+  // Tap: show/hide controls. Horizontal swipe: seek, the full width = 20 min.
+  const gest = $('.gest', el);
+  let touch = null;
+  gest.addEventListener('pointerdown', e => {
+    touch = { x: e.clientX, y: e.clientY, start: video.currentTime, seeking: false, target: 0 };
+    gest.setPointerCapture(e.pointerId);
+  });
+  gest.addEventListener('pointermove', e => {
+    if (!touch) return;
+    const dx = e.clientX - touch.x, dy = e.clientY - touch.y;
+    if (!touch.seeking && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) touch.seeking = true;
+    if (!touch.seeking) return;
+    const max = isFinite(video.duration) ? video.duration : Infinity;
+    touch.target = Math.max(0, Math.min(max, touch.start + dx / el.clientWidth * SWIPE_FULL_SEEK));
+    const delta = touch.target - touch.start;
+    hint.textContent = `${delta < 0 ? '-' : '+'}${fmtTime(Math.abs(delta))}  ${fmtTime(touch.target)} / ${fmtTime(video.duration)}`;
+    hint.classList.remove('hidden');
+  });
+  const endTouch = cancelled => {
+    if (!touch) return;
+    if (touch.seeking && !cancelled) seekTo(touch.target);
+    else if (!touch.seeking && !cancelled) showControls(ctl.classList.contains('off'));
+    hint.classList.add('hidden');
+    touch = null;
+  };
+  gest.addEventListener('pointerup', () => endTouch(false));
+  gest.addEventListener('pointercancel', () => endTouch(true));
+
+  showControls(true);
+}
+
+// ── 解析下载 ────────────────────────────────────────────────────────────
+function openParse(initialUrl = '') {
+  const el = layer();
+  el.innerHTML = `
+    <div class="pagebar"><button class="icon-btn" data-act="back" aria-label="返回">${ICON.back}</button>解析下载</div>
+    <div class="form">
+      <input type="url" placeholder="视频网址" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="row">
+        <button class="btn outline wide" data-act="resolve">解析</button>
+        <button class="btn wide" data-act="download">下载</button>
+      </div>
+      <div class="msg hidden"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;padding:0 12px"><button class="icon-btn" data-act="clear" aria-label="清除历史记录">${ICON.del}</button></div>
+    <div class="scroll hist-list"></div>`;
+  const input = $('input', el), msg = $('.msg', el);
+  input.value = initialUrl;
+  // The last successful 解析, so 下载 of that same URL needn't scrape it again.
+  let resolved = null, resolvedFor = '', busy = '';
+
+  const setMsg = (text, isError) => {
+    msg.textContent = text || '';
+    msg.className = 'msg' + (isError ? ' err' : '') + (text ? '' : ' hidden');
+  };
+  function render() {
+    $('[data-act=resolve]', el).textContent = busy === 'resolve' ? '解析中...' : '解析';
+    $('[data-act=download]', el).textContent = busy === 'download' ? '下载中...' : '下载';
+    el.querySelectorAll('.btn').forEach(b => { b.disabled = !!busy; });
+    const items = History.all();
+    $('[data-act=clear]', el).classList.toggle('hidden', !items.length);
+    $('.hist-list', el).innerHTML = items.map(h => {
+      const d = new Date(h.timestamp);
+      const t = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      return `<div class="hist"><div class="t">${esc(h.outputName || h.url)}</div><div class="s">${esc(h.url)}</div>
+        <div class="${h.success ? 'ok' : 'bad'}">${t} · ${h.success ? '成功' : '失败：' + esc(h.message)}</div></div>`;
+    }).join('');
+  }
+  function check(u) {
+    if (!u) { setMsg('请输入或分享一个视频网址', true); return false; }
+    if (!apiKey) { setMsg('请先在设置里填写 API Key', true); openSettings(); return false; }
+    return true;
+  }
+
+  el.addEventListener('click', async e => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    const u = input.value.trim();
+    if (act === 'back') el.remove();
+    else if (act === 'clear') { History.clear(); render(); }
+    else if (act === 'resolve' && check(u)) {
+      busy = 'resolve'; setMsg(''); render();
+      try {
+        resolved = await api('detail', { params: { url: u } });
+        resolvedFor = u;
+        setMsg(`解析成功：\n${resolved.title}\n${resolved.resolved_url}`, false);
+      } catch (err) {
+        resolved = null; resolvedFor = '';
+        setMsg('解析失败：' + err.message, true);
+      }
+      busy = ''; render();
+    } else if (act === 'download' && check(u)) {
+      busy = 'download'; setMsg(''); render();
+      try {
+        const r = resolved && resolvedFor === u
+          ? await api('download', { method: 'POST', body: { resolved_url: resolved.resolved_url, output_name: `${resolved.id || 'video'}.mp4` } })
+          : await api('resolve', { method: 'POST', body: { url: u } });
+        setMsg('已提交远端下载：' + r.output_name, false);
+        History.add({ url: u, outputName: r.output_name, success: true, message: '已提交' });
+      } catch (err) {
+        setMsg('失败：' + err.message, true);
+        History.add({ url: u, outputName: null, success: false, message: err.message });
+      }
+      resolved = null; resolvedFor = ''; input.value = ''; busy = ''; render();
+    }
+  });
+  render();
+}
+
+// ── 设置 ───────────────────────────────────────────────────────────────
+let settingsOpen = false;
+function openSettings() {
+  if (settingsOpen) return;
+  settingsOpen = true;
+  const el = layer();
+  el.innerHTML = `
+    <div class="pagebar"><button class="icon-btn" data-act="back" aria-label="返回">${ICON.back}</button>解析服务设置</div>
+    <div class="form">
+      <label>解析服务地址</label>
+      <div>${esc(new URL(API).origin)}</div>
+      <label>API Key</label>
+      <input type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="row" style="margin-top:8px">
+        <button class="btn" data-act="save">保存</button>
+        <button class="btn outline" data-act="refresh">刷新分类</button>
+      </div>
+    </div>`;
+  const input = $('input', el);
+  input.value = apiKey;
+  const close = () => { settingsOpen = false; el.remove(); };
+
+  el.addEventListener('click', async e => {
+    const btn = e.target.closest('[data-act]');
+    const act = btn?.dataset.act;
+    if (act === 'back') close();
+    else if (act === 'save') {
+      const changed = input.value.trim() !== apiKey;
+      apiKey = input.value.trim();
+      LS.set('uav.apiKey', apiKey);
+      close();
+      if (changed || !mainList.videos.length) M.site ? loadMain() : openStored();
+    } else if (act === 'refresh') {
+      if (!input.value.trim()) return toast('请先填写 API Key', true);
+      apiKey = input.value.trim();
+      btn.disabled = true;
+      btn.textContent = '刷新中...';
+      let fail = 0;
+      for (const site of ['jabletv', 'missav']) {
+        try {
+          const cats = (await api(`browse/${site}/categories`, { params: { refresh: 'true' } })).categories || [];
+          categories[site] = cats;
+          LS.set('uav.cat.' + site, cats);
+        } catch { fail++; }
+      }
+      btn.disabled = false;
+      btn.textContent = '刷新分类';
+      toast(fail ? `刷新完成，${fail} 个站点失败` : '分类缓存已刷新', !!fail);
+    }
+  });
+}
+
+// ── Start ──────────────────────────────────────────────────────────────
+renderPager();
+// /app/?url=<video page> opens 解析下载 with it filled in (e.g. from an iOS Shortcut).
+const shared = new URLSearchParams(location.search).get('url');
+if (shared) openParse(shared);
+if (!apiKey) openSettings();
+else openStored();
+</script>
+</body>
+</html>
