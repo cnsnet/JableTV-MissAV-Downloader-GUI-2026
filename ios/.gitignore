@@ -1,0 +1,5 @@
+UAVResolver.xcodeproj/
+UAVResolver/Info.plist
+build/
+Payload/
+*.ipa

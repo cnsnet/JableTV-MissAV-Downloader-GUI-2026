@@ -1,0 +1,54 @@
+name: ios-build
+
+# Builds the iOS client (ios/) unsigned. Download the IPA from the run's
+# artifacts and sign it with your own Apple ID (Sideloadly / AltStore).
+on:
+  workflow_dispatch:
+  push:
+    branches: [custom]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen and xcbeautify
+        run: brew install xcodegen xcbeautify
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project UAVResolver.xcodeproj \
+            -scheme UAVResolver \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | xcbeautify --renderer github-actions
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/UAVResolver.app Payload/
+          zip -qry UAVResolver-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UAVResolver-unsigned-ipa
+          path: ios/UAVResolver-unsigned.ipa
+          if-no-files-found: error
