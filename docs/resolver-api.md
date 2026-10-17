@@ -7,7 +7,7 @@ Resolver 是给 Android 客户端和网页版（PWA）用的 HTTP 服务（[src/
 
 ## 概览
 
-`/api` 下共 **22 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health` 和网页版（见文末「网页版」）。
+`/api` 下共 **24 个接口**（按 方法 + 路径 计），另有不在 `/api` 下的 `GET /health` 和网页版（见文末「网页版」）。
 
 | # | 方法 | 路径 | 分组 |
 |---|---|---|---|
@@ -33,9 +33,11 @@ Resolver 是给 Android 客户端和网页版（PWA）用的 HTTP 服务（[src/
 | 20 | POST | `/api/query` | 数据查询 |
 | 21 | GET | `/api/query/tables` | 数据查询 |
 | 22 | GET | `/api/play/hls` | 播放代理 |
+| 23 | POST | `/api/login` | 网页版登录 |
+| 24 | POST | `/api/logout` | 网页版登录 |
 
-**认证**：除 `/health` 和网页版静态文件外，所有接口都要带请求头
-`X-API-Key: <RESOLVER_API_KEY>`，否则返回 401。`/api/browse/thumb` 和 `/api/play/hls` 还可以用
+**认证**：除 `/health`、`/api/login`、`/api/logout` 和网页版静态文件外，所有接口都要带请求头
+`X-API-Key: <RESOLVER_API_KEY>`，或者带网页版登录后的会话 Cookie，否则返回 401。`/api/browse/thumb` 和 `/api/play/hls` 还可以用
 query 参数 `api_key=` 传 key（图片加载库和 `<video>` 加不了请求头）。
 
 **站点**：`{site}` 取 `jabletv` 或 `missav`，其他值返回 404。
@@ -255,11 +257,28 @@ Recombee 相关字段要等爬取经过该视频后才有值。播放仍应走 `
 
 `u` 只接受 http/https，否则 400；抓取失败或上游返回 4xx/5xx 时返回 502。
 
+## 网页版登录
+
+### POST `/api/login`
+
+请求体：`{"api_key": "..."}`。Key 正确时返回 `{"ok": true}` 并设置会话 Cookie `uav_session`
+（HttpOnly、SameSite=Lax，HTTPS 下加 Secure，有效期 180 天；用当前 API Key 签名，换 Key 后所有会话失效）。
+之后带这个 Cookie 的 `/api` 请求视同带了 `X-API-Key`。
+
+Key 错误返回 401；同一客户端 IP 10 分钟内失败 5 次后返回 429，直到窗口过去。
+
+### POST `/api/logout`
+
+清除会话 Cookie，返回 `{"ok": true}`。
+
 ## 网页版
 
 `GET /` 跳转到 `/app/`，那里是网页版客户端（[src/uav_downloader/resolver/web/](../src/uav_downloader/resolver/web/)），
-功能同 Android 客户端，主要给 iOS 用（Safari「添加到主屏幕」）。和 API 同源，API Key 存在浏览器 localStorage。
-打开 `/app/?url=<视频页 URL>` 会直接进入「解析下载」并填好网址。
+功能同 Android 客户端，主要给 iOS 用（Safari「添加到主屏幕」）。和 API 同源。
+
+没有有效会话时 `/app/` 只返回登录页（`login.html`），登录后才返回应用本身（`index.html`），两者都不缓存；
+`/app/manifest.webmanifest` 和图标公开（iOS 添加到主屏幕要用）。
+打开 `/app/?url=<视频页 URL>` 会直接进入「解析下载」并填好网址（未登录时先登录）。
 
 ## 环境变量
 

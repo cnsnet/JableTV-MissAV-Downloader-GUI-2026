@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import pytest
 
@@ -438,5 +439,76 @@ def test_web_client_is_served():
     routes = {getattr(r, 'path', None): r for r in resolver_app.app.routes}
     assert resolver_app.web_root().headers['location'] == '/app/'
     assert (resolver_app._WEB_DIR / 'index.html').is_file()
+    assert (resolver_app._WEB_DIR / 'login.html').is_file()
     assert (resolver_app._WEB_DIR / 'manifest.webmanifest').is_file()
     assert '/app' in routes
+
+
+def _request(cookie=None, client='1.2.3.4', scheme='http'):
+    from starlette.requests import Request
+    headers = [(b'cookie', f'{resolver_app.SESSION_COOKIE}={cookie}'.encode())] if cookie else []
+    return Request({'type': 'http', 'method': 'GET', 'path': '/', 'query_string': b'',
+                    'headers': headers, 'client': (client, 0), 'scheme': scheme,
+                    'server': ('test', 80)})
+
+
+def test_web_session_cookie(monkeypatch):
+    import asyncio
+    session = resolver_app._new_session()
+    assert resolver_app._valid_session(session)
+    expires, _, sig = session.partition('.')
+    assert not resolver_app._valid_session(f'{int(expires) + 1}.{sig}')
+    assert not resolver_app._valid_session('')
+    assert not resolver_app._valid_session(f'{int(time.time()) - 1}.'
+                                           + resolver_app._session_sig(int(time.time()) - 1))
+
+    seen = []
+
+    async def inner(scope, receive, send):
+        seen.append(dict(scope['headers']).get(b'x-api-key'))
+
+    middleware = resolver_app._SessionAuth(inner)
+
+    def run(path, cookie):
+        headers = [(b'cookie', f'a=1; {resolver_app.SESSION_COOKIE}={cookie}'.encode())]
+        asyncio.run(middleware({'type': 'http', 'path': path, 'headers': headers}, None, None))
+        return seen[-1]
+
+    assert run('/api/videos', session) == b'test-key'
+    assert run('/api/videos', 'forged.0000') is None
+    assert run('/app/', session) is None
+
+
+def test_web_login(monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setattr(resolver_app, '_login_failures', {})
+    resp = resolver_app.login(resolver_app.LoginRequest(api_key=' test-key '), _request())
+    cookie = resp.headers['set-cookie']
+    assert cookie.startswith(resolver_app.SESSION_COOKIE + '=')
+    assert 'HttpOnly' in cookie and 'SameSite=lax' in cookie and 'Secure' not in cookie
+
+    for _ in range(resolver_app._LOGIN_MAX_FAILURES):
+        with pytest.raises(HTTPException) as exc:
+            resolver_app.login(resolver_app.LoginRequest(api_key='wrong'), _request())
+        assert exc.value.status_code == 401
+    # Locked out, even with the right key; other clients are not.
+    with pytest.raises(HTTPException) as exc:
+        resolver_app.login(resolver_app.LoginRequest(api_key='test-key'), _request())
+    assert exc.value.status_code == 429
+    resolver_app.login(resolver_app.LoginRequest(api_key='test-key'), _request(client='5.6.7.8'))
+
+
+def test_web_app_needs_login():
+    assert resolver_app.web_app(_request()).path.name == 'login.html'
+    assert resolver_app.web_app(_request('forged.0000')).path.name == 'login.html'
+    page = resolver_app.web_app(_request(resolver_app._new_session()))
+    assert page.path.name == 'index.html'
+    assert page.headers['cache-control'] == 'no-store'
+
+
+def test_play_hls_keeps_header_key_out_of_playlist(monkeypatch):
+    monkeypatch.setattr(resolver_app, '_http_get', lambda url, headers=None, timeout=20:
+                        _FakeResp(b'#EXTM3U\nseg0.ts\n', url))
+    # As the session middleware passes a cookie-authenticated request on.
+    resp = resolver_app.play_hls(x_api_key='test-key', u='https://cdn/a/v.m3u8', api_key=None)
+    assert resp.body.decode().splitlines()[1] == 'hls?u=https%3A%2F%2Fcdn%2Fa%2Fseg0.ts&ref='

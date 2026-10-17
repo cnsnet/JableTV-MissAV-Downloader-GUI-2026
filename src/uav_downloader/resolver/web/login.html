@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="UAV">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>UAV Resolver</title>
+<style>
+:root { --bg: #ffffff; --fg: #212121; --muted: #757575; --primary: #6750a4; --on-primary: #ffffff; --error: #b3261e; --border: #cac4d0; color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #121212; --fg: #e6e1e5; --muted: #a0a0a0; --primary: #d0bcff; --on-primary: #381e72; --error: #f2b8b5; --border: #49454f; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; }
+body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+form { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
+img { width: 64px; height: 64px; border-radius: 14px; align-self: center; }
+h1 { margin: 0 0 8px; font-size: 20px; text-align: center; }
+input { height: 48px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 16px; outline: 0; }
+input:focus { border-color: var(--primary); border-width: 2px; padding: 0 11px; }
+button { height: 44px; border: 0; border-radius: 8px; background: var(--primary); color: var(--on-primary); font: inherit; font-size: 16px; }
+button:disabled { opacity: .5; }
+.err { min-height: 20px; color: var(--error); text-align: center; }
+</style>
+</head>
+<body>
+<form id="f">
+  <img src="icon-180.png" alt="">
+  <h1>UAV Resolver</h1>
+  <!-- A password field: no autocorrect / smart punctuation mangling the key. -->
+  <input id="key" type="password" placeholder="API Key" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>
+  <button id="go" type="submit">登录</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+'use strict';
+const form = document.getElementById('f'), key = document.getElementById('key');
+const go = document.getElementById('go'), err = document.getElementById('err');
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  go.disabled = true;
+  err.textContent = '';
+  try {
+    const resp = await fetch(new URL('../api/login', location.href), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key.value.trim() }),
+    });
+    if (resp.ok) return location.replace('./' + location.search);
+    err.textContent = resp.status === 401 ? 'API Key 不正确'
+      : resp.status === 429 ? '失败次数太多，请 10 分钟后再试' : `登录失败（HTTP ${resp.status}）`;
+  } catch (ex) {
+    err.textContent = '网络错误：' + ex.message;
+  }
+  go.disabled = false;
+  key.select();
+});
+</script>
+</body>
+</html>

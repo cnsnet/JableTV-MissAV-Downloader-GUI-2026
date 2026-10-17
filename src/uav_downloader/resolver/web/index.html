@@ -228,7 +228,8 @@ const LS = {
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 
-let apiKey = LS.get('uav.apiKey', '');
+// Requests carry the session cookie set by the login page, not the key.
+LS.del('uav.apiKey');
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -239,14 +240,15 @@ async function api(path, { method = 'GET', params = {}, body } = {}) {
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
   }
-  const headers = { 'X-API-Key': apiKey };
-  if (body) headers['Content-Type'] = 'application/json';
+  const headers = body ? { 'Content-Type': 'application/json' } : {};
   let resp;
   try {
     resp = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   } catch (e) {
     throw new ApiError(0, '网络错误：' + e.message);
   }
+  // Session expired or the key was changed: back to the login page.
+  if (resp.status === 401) location.replace('./');
   const text = await resp.text();
   let json = null;
   try { json = JSON.parse(text); } catch {}
@@ -258,7 +260,7 @@ async function api(path, { method = 'GET', params = {}, body } = {}) {
   return json;
 }
 
-const thumbUrl = u => u ? `${API}browse/thumb?url=${enc(u)}&api_key=${enc(apiKey)}` : '';
+const thumbUrl = u => u ? `${API}browse/thumb?url=${enc(u)}` : '';
 
 let toastTimer = 0;
 function toast(msg, isError = false) {
@@ -466,7 +468,7 @@ function renderPager() {
 
 async function loadMain() {
   const stored = M.site === 'stored' || M.site === 'favourite';
-  if (!apiKey || !M.site || (!stored && !M.search && !M.category)) return;
+  if (!M.site || (!stored && !M.search && !M.category)) return;
   const seq = ++M.seq;
   setLoading(true);
   setError('');
@@ -489,7 +491,6 @@ async function loadMain() {
     if (seq !== M.seq) return;
     setError(e.message || '列表加载失败');
     mainList.set([]);
-    if (e.status === 401) openSettings();
   } finally {
     if (seq === M.seq) setLoading(false);
     renderPager();
@@ -780,7 +781,7 @@ function loadHlsJs() {
     document.head.appendChild(s);
   });
 }
-const proxyUrl = (u, ref) => `${API}play/hls?u=${enc(u)}&ref=${enc(ref || '')}&api_key=${enc(apiKey)}`;
+const proxyUrl = (u, ref) => `${API}play/hls?u=${enc(u)}&ref=${enc(ref || '')}`;
 
 function openPlayer(detail, title) {
   const el = layer('player');
@@ -952,7 +953,6 @@ function openParse(initialUrl = '') {
   }
   function check(u) {
     if (!u) { setMsg('请输入或分享一个视频网址', true); return false; }
-    if (!apiKey) { setMsg('请先在设置里填写 API Key', true); openSettings(); return false; }
     return true;
   }
 
@@ -997,34 +997,26 @@ function openSettings() {
   settingsOpen = true;
   const el = layer();
   el.innerHTML = `
-    <div class="pagebar"><button class="icon-btn" data-act="back" aria-label="返回">${ICON.back}</button>解析服务设置</div>
+    <div class="pagebar"><button class="icon-btn" data-act="back" aria-label="返回">${ICON.back}</button>设置</div>
     <div class="form">
       <label>解析服务地址</label>
       <div>${esc(new URL(API).origin)}</div>
-      <label>API Key</label>
-      <input type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
       <div class="row" style="margin-top:8px">
-        <button class="btn" data-act="save">保存</button>
         <button class="btn outline" data-act="refresh">刷新分类</button>
+        <button class="btn outline" data-act="logout">退出登录</button>
       </div>
     </div>`;
-  const input = $('input', el);
-  input.value = apiKey;
   const close = () => { settingsOpen = false; el.remove(); };
 
   el.addEventListener('click', async e => {
     const btn = e.target.closest('[data-act]');
     const act = btn?.dataset.act;
     if (act === 'back') close();
-    else if (act === 'save') {
-      const changed = input.value.trim() !== apiKey;
-      apiKey = input.value.trim();
-      LS.set('uav.apiKey', apiKey);
-      close();
-      if (changed || !mainList.videos.length) M.site ? loadMain() : openStored();
+    else if (act === 'logout') {
+      if (!confirm('退出登录？之后需要重新输入 API Key。')) return;
+      try { await api('logout', { method: 'POST' }); } catch {}
+      location.replace('./');
     } else if (act === 'refresh') {
-      if (!input.value.trim()) return toast('请先填写 API Key', true);
-      apiKey = input.value.trim();
       btn.disabled = true;
       btn.textContent = '刷新中...';
       let fail = 0;
@@ -1046,9 +1038,8 @@ function openSettings() {
 renderPager();
 // /app/?url=<video page> opens 解析下载 with it filled in (e.g. from an iOS Shortcut).
 const shared = new URLSearchParams(location.search).get('url');
+openStored();
 if (shared) openParse(shared);
-if (!apiKey) openSettings();
-else openStored();
 </script>
 </body>
 </html>

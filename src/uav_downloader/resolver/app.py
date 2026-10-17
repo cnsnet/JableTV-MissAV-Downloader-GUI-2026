@@ -18,12 +18,13 @@ import re
 import sqlite3
 import threading
 import time
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import requests
-from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import RedirectResponse, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1252,8 +1253,8 @@ _URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 
 def _hls_proxy_url(target: str, ref: str, api_key: str) -> str:
     # Relative to /api/play/hls itself, so it also works behind a path prefix.
-    return (f'hls?u={quote(target, safe="")}&ref={quote(ref, safe="")}'
-            f'&api_key={quote(api_key, safe="")}')
+    url = f'hls?u={quote(target, safe="")}&ref={quote(ref, safe="")}'
+    return f'{url}&api_key={quote(api_key, safe="")}' if api_key else url
 
 
 def _rewrite_playlist(text: str, base_url: str, ref: str, api_key: str) -> str:
@@ -1292,9 +1293,9 @@ def _segment_type(url: str, content_type: str) -> str:
 def play_hls(
         u: str, ref: str = '', x_api_key: str | None = Header(default=None),
         api_key: str | None = None):
-    # <video> loads plain URLs, so the key comes as a query param here too.
-    key = x_api_key or api_key
-    if key != RESOLVER_API_KEY:
+    # <video> loads plain URLs, so the key may come as a query param too
+    # (the web client sends its session cookie instead).
+    if (x_api_key or api_key) != RESOLVER_API_KEY:
         raise HTTPException(status_code=401, detail='invalid or missing API key')
     if urlsplit(u).scheme not in ('http', 'https'):
         raise HTTPException(status_code=400, detail='unsupported url')
@@ -1314,8 +1315,10 @@ def play_hls(
 
     body = resp.content
     if body[:7] == b'#EXTM3U':
+        # Only a key that came in the URL is passed on in the rewritten ones,
+        # so a cookie- or header-authenticated client never sees it.
         playlist = _rewrite_playlist(
-            body.decode('utf-8', 'replace'), str(resp.url or u), ref, key)
+            body.decode('utf-8', 'replace'), str(resp.url or u), ref, api_key or '')
         return Response(content=playlist, media_type='application/vnd.apple.mpegurl',
                         headers={'Cache-Control': 'no-store'})
     return Response(
@@ -1327,8 +1330,120 @@ def play_hls(
 # ── Web client (PWA) ────────────────────────────────────────────────────
 # A browser version of the Android app, mainly for iOS ("Add to Home
 # Screen"); same origin as the API, so it needs no CORS.
+#
+# The web client logs in once with the API key (POST /api/login) and from
+# then on sends a signed session cookie instead, so the key is neither kept
+# in the browser nor put into thumbnail/video URLs. Until then /app/ only
+# serves the login page.
 
 _WEB_DIR = Path(__file__).with_name('web')
+SESSION_COOKIE = 'uav_session'
+SESSION_DAYS = 180
+# Failed logins per client allowed within the window before 429.
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_WINDOW = 600
+_login_failures: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _session_sig(expires: int) -> str:
+    return hmac.new(RESOLVER_API_KEY.encode(), f'web-session:{expires}'.encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def _new_session() -> str:
+    expires = int(time.time()) + SESSION_DAYS * 86400
+    return f'{expires}.{_session_sig(expires)}'
+
+
+def _valid_session(value: str | None) -> bool:
+    """Signed with the current key (changing it logs every browser out) and
+    not expired."""
+    expires, _, sig = (value or '').partition('.')
+    if not expires.isdigit() or int(expires) < time.time():
+        return False
+    return hmac.compare_digest(sig, _session_sig(int(expires)))
+
+
+def _session_from_headers(headers) -> str | None:
+    for name, value in headers:
+        if name == b'cookie':
+            cookies = SimpleCookie()
+            try:
+                cookies.load(value.decode('latin-1'))
+            except CookieError:
+                continue
+            if SESSION_COOKIE in cookies:
+                return cookies[SESSION_COOKIE].value
+    return None
+
+
+class _SessionAuth:
+    """ASGI middleware: an /api request without X-API-Key but with a valid
+    session cookie is let through as if it carried the key, so every
+    endpoint's own key check covers the web client too."""
+
+    def __init__(self, asgi_app):
+        self.app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and scope['path'].startswith('/api/'):
+            headers = scope['headers']
+            if (not any(name == b'x-api-key' for name, _ in headers)
+                    and _valid_session(_session_from_headers(headers))):
+                scope = {**scope, 'headers': [
+                    *headers, (b'x-api-key', RESOLVER_API_KEY.encode())]}
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_SessionAuth)
+
+
+def _check_login_rate(client: str):
+    now = time.time()
+    with _login_lock:
+        recent = [t for t in _login_failures.get(client, []) if now - t < _LOGIN_WINDOW]
+        _login_failures[client] = recent
+        if len(recent) >= _LOGIN_MAX_FAILURES:
+            raise HTTPException(status_code=429, detail='too many failed logins, try later')
+
+
+def _record_login_failure(client: str):
+    with _login_lock:
+        _login_failures.setdefault(client, []).append(time.time())
+
+
+def _is_https(request: Request) -> bool:
+    return (request.url.scheme == 'https'
+            or request.headers.get('x-forwarded-proto', '').split(',')[0].strip() == 'https')
+
+
+class LoginRequest(BaseModel):
+    api_key: str
+
+
+@app.post('/api/login')
+def login(req: LoginRequest, request: Request):
+    """Web client login: checks the key and sets the session cookie."""
+    client = request.client.host if request.client else ''
+    _check_login_rate(client)
+    if not hmac.compare_digest(req.api_key.strip().encode(), RESOLVER_API_KEY.encode()):
+        _record_login_failure(client)
+        logger.warning('failed web login from %s', client)
+        raise HTTPException(status_code=401, detail='invalid API key')
+    resp = Response(content='{"ok":true}', media_type='application/json')
+    # Lax, not Strict: iOS opens a home-screen app like a link from nowhere,
+    # and Lax still keeps the cookie off other sites' POST/PUT/DELETE.
+    resp.set_cookie(SESSION_COOKIE, _new_session(), max_age=SESSION_DAYS * 86400,
+                    httponly=True, samesite='lax', secure=_is_https(request), path='/')
+    return resp
+
+
+@app.post('/api/logout')
+def logout():
+    resp = Response(content='{"ok":true}', media_type='application/json')
+    resp.delete_cookie(SESSION_COOKIE, path='/')
+    return resp
 
 
 @app.get('/', include_in_schema=False)
@@ -1336,4 +1451,22 @@ def web_root():
     return RedirectResponse('/app/')
 
 
-app.mount('/app', StaticFiles(directory=_WEB_DIR, html=True), name='web')
+@app.get('/app/', include_in_schema=False)
+def web_app(request: Request):
+    """The app once logged in, the login page before; never cached, so a
+    logout or key change shows at once."""
+    page = 'index.html' if _valid_session(request.cookies.get(SESSION_COOKIE)) else 'login.html'
+    return FileResponse(_WEB_DIR / page, media_type='text/html',
+                        headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/app', include_in_schema=False)
+@app.get('/app/index.html', include_in_schema=False)
+@app.get('/app/login.html', include_in_schema=False)
+def web_page_alias():
+    return RedirectResponse('/app/')
+
+
+# The rest (manifest, icons) is public: iOS needs it to add the login page
+# to the home screen.
+app.mount('/app', StaticFiles(directory=_WEB_DIR), name='web')
