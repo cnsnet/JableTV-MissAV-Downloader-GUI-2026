@@ -209,16 +209,27 @@ fun FullscreenPlayer(video: VideoDetail, onClose: () -> Unit) {
             .pointerInput(durationMs, screenWidthDp) {
                 // Full edge-to-edge swipe covers FULL_SWIPE_SEEK_MS regardless of screen size.
                 val msPerDp = FULL_SWIPE_SEEK_MS / screenWidthDp
+                // Playback keeps moving during the drag, so the preview counts from
+                // where the finger landed, not from the position of the moment.
+                var dragBaseMs = 0L
                 detectHorizontalDragGestures(
                     onDragStart = {
-                        wake()
+                        // Seeking alone does not summon the controls; if they are
+                        // already up, keep them up for the duration of the drag.
+                        if (controlsVisible) wake()
                         dragAccumPx = 0f
+                        dragBaseMs = positionMs
                         seekPreviewMs = positionMs
                     },
                     onDragEnd = {
                         seekPreviewMs?.let { target ->
-                            player.seekTo(target.coerceIn(0, durationMs.coerceAtLeast(0)))
+                            val clamped = target.coerceIn(0, durationMs.coerceAtLeast(0))
+                            player.seekTo(clamped)
+                            // Adopt the target right away: the 500ms poller would
+                            // otherwise show the stale position for a frame or two.
+                            positionMs = clamped
                         }
+                        if (controlsVisible) wake()
                         seekPreviewMs = null
                         dragAccumPx = 0f
                     },
@@ -231,7 +242,7 @@ fun FullscreenPlayer(video: VideoDetail, onClose: () -> Unit) {
                         dragAccumPx += dragAmount
                         val deltaMs = (dragAccumPx / density.density * msPerDp).toLong()
                         val cap = if (durationMs > 0) durationMs else Long.MAX_VALUE
-                        seekPreviewMs = (positionMs + deltaMs).coerceIn(0, cap)
+                        seekPreviewMs = (dragBaseMs + deltaMs).coerceIn(0, cap)
                     },
                 )
             }
@@ -344,10 +355,15 @@ fun FullscreenPlayer(video: VideoDetail, onClose: () -> Unit) {
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
                 Slider(
-                    value = sliderDragValue ?: positionMs.toFloat(),
+                    // Horizontal swipe seeking moves the bar live, before the finger lifts.
+                    value = sliderDragValue ?: seekPreviewMs?.toFloat() ?: positionMs.toFloat(),
                     onValueChange = { wake(); sliderDragValue = it },
                     onValueChangeFinished = {
-                        sliderDragValue?.let { player.seekTo(it.toLong()) }
+                        sliderDragValue?.let {
+                            val target = it.toLong().coerceIn(0, durationMs.coerceAtLeast(0))
+                            player.seekTo(target)
+                            positionMs = target
+                        }
                         sliderDragValue = null
                     },
                     valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
@@ -361,7 +377,7 @@ fun FullscreenPlayer(video: VideoDetail, onClose: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(formatDuration(sliderDragValue?.toLong() ?: positionMs), color = Color.White)
+                    Text(formatDuration(sliderDragValue?.toLong() ?: seekPreviewMs ?: positionMs), color = Color.White)
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = {
                         wake()
@@ -387,6 +403,27 @@ fun FullscreenPlayer(video: VideoDetail, onClose: () -> Unit) {
                     }
                     Spacer(Modifier.weight(1f))
                     Text(formatDuration(durationMs), color = Color.White)
+                }
+            }
+        } else {
+            // Swipe seeking with the controls hidden: only a thin progress line at
+            // the bottom, alongside the centred delta overlay. A tap brings the rest back.
+            val preview = seekPreviewMs
+            if (preview != null) {
+                val fraction = if (durationMs > 0) (preview.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomStart)
+                        .height(3.dp)
+                        .background(Color.White.copy(alpha = 0.3f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction)
+                            .fillMaxHeight()
+                            .background(Color.White),
+                    )
                 }
             }
         }
